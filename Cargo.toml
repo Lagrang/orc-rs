@@ -1,0 +1,11 @@
+[package]
+name = "orc-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1.2.1"
+prost = "0.11.2"
+
+[build-dependencies]
+prost-build = { version = "0.11.0" }

@@ -1,7 +1,5 @@
-pub mod orc {
-    pub mod proto {
-        include!(concat!(env!("OUT_DIR"), "/orc.proto.rs"));
-    }
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/orc.proto.rs"));
 }
 
 mod io_utils;

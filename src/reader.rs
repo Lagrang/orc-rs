@@ -16,6 +16,8 @@ pub struct FileReader {}
 
 pub trait Reader {}
 
+struct FileVersion(u32, u32);
+
 struct TailReader<'a, T: Read + Seek> {
     file_reader: &'a PositionalReader<'a, T>,
     read_buffer: Bytes,
@@ -65,6 +67,11 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             ));
         }
 
+        let mut version = FileVersion(0, 0);
+        if postscript.version.len() == 2 {
+            version.0 = postscript.version[0];
+            version.1 = postscript.version[1];
+        }
         let footer = self.read_footer(&postscript, postscript_len)?;
 
         Ok(())
@@ -103,12 +110,16 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
 
         // all data read from existing buffer, replace it with empty one
         self.read_buffer = Bytes::new();
-        proto::Footer::decode(footer_buffer).map_err(|err| {
+        let footer = proto::Footer::decode(footer_buffer).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Footer protobuf damaged: '{}'", err.to_string()),
             )
-        })
+        })?;
+
+        if footer.header_length() != 3 {}
+
+        Ok(footer)
     }
 
     fn read_postscript(&mut self) -> Result<(proto::PostScript, u64)> {
@@ -155,5 +166,5 @@ where
         ));
     }
 
-    Ok()
+    Ok(reader)
 }

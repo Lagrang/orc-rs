@@ -31,7 +31,7 @@ impl CompressionFactory {
         Self { zstd_opts }
     }
 
-    fn decoder(
+    pub fn decoder(
         &self,
         compressed_stream: impl Read,
         compression_type: proto::CompressionKind,
@@ -54,6 +54,13 @@ impl CompressionFactory {
                     reader
                 })
             }
+            proto::CompressionKind::Lz4 => Ok(Box::new(lz4_flex::frame::FrameDecoder::new(
+                compressed_stream,
+            ))),
+            proto::CompressionKind::Zlib => {
+                Ok(Box::new(flate2::read::ZlibDecoder::new(compressed_stream)))
+            }
+            proto::CompressionKind::None => Ok(Box::new(compressed_stream)),
             _ => panic!("Compression type '{:?}' is not supported", compression_type),
         }
     }

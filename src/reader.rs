@@ -1,16 +1,20 @@
 use std::io;
+use std::ops::Deref;
 use std::{
     format,
     io::{Read, Result, Seek},
 };
 
+use crate::compression::CompressionFactory;
 use crate::io_utils::PositionalReader;
 use crate::proto;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use prost::Message;
 
 pub struct ReaderOptions {
     pub file_end_pos: Option<u64>,
+    pub compression_opts: CompressionFactory,
+    //TODO: pub allocator: &'a dyn std::alloc::Allocator,
 }
 pub struct FileReader {}
 
@@ -20,12 +24,17 @@ struct FileVersion(u32, u32);
 
 struct TailReader<'a, T: Read + Seek> {
     file_reader: &'a PositionalReader<'a, T>,
+    opts: &'a ReaderOptions,
     read_buffer: Bytes,
     file_end_pos: u64,
 }
 
 impl<'a, T: Read + Seek> TailReader<'a, T> {
-    fn new(file_reader: &PositionalReader<'a, T>, file_end_pos: u64) -> Result<Self> {
+    fn new(
+        file_reader: &PositionalReader<'a, T>,
+        file_end_pos: u64,
+        opts: &ReaderOptions,
+    ) -> Result<Self> {
         // Try to read 16K from ORC file tail to get footer and postscript in one call.
         let tail_buf_cap: u64 = 16 * 1024;
         let mut buffer = Vec::with_capacity(tail_buf_cap as usize);
@@ -48,6 +57,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
 
         Ok(TailReader {
             file_reader,
+            opts,
             read_buffer: Bytes::from(buffer).slice(..bytes_read),
             file_end_pos,
         })
@@ -110,14 +120,103 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
 
         // all data read from existing buffer, replace it with empty one
         self.read_buffer = Bytes::new();
-        let footer = proto::Footer::decode(footer_buffer).map_err(|err| {
+        // decompress the footer
+        let footer_reader = self
+            .opts
+            .compression_opts
+            .decoder(footer_buffer.reader(), postscript.compression())?;
+        let decompressed_footer_buf = Vec::with_capacity(footer_buffer.len());
+        footer_reader
+            .read_to_end(&mut decompressed_footer_buf)
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("ORC footer decompression failed: {}", err.to_string()),
+                )
+            })?;
+        let footer = proto::Footer::decode(decompressed_footer_buf.deref()).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Footer protobuf damaged: '{}'", err.to_string()),
             )
         })?;
 
-        if footer.header_length() != 3 {}
+        // validate the schema
+        if footer.types.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("ORC footer misses the schema(types vector is empty)",),
+            ));
+        }
+        // Schema tree should be numbered in increasing order, level by level.
+        // Increase of type ID happens on each new type(going deeper when nested type is found).
+        //
+        // For instance, we have a schema:
+        //               Struct(0)
+        //         /         |      \
+        //  Int(1)      Struct(2)  Float(5)
+        //               |      \
+        //          Int(3)      String(4)
+        //
+        // Types should be encoded in this way:
+        // Type_ID: 0
+        //      SubTypes: 1,2,5
+        // Type_ID: 1
+        // Type_ID: 2
+        //      SubTypes: 3,4
+        // Type_ID: 3
+        // Type_ID: 4
+        // Type_ID: 5
+        let max_type_id = footer.types.len();
+        for type_id in 0..max_type_id {
+            let field_type = footer.types[type_id];
+            if field_type.kind() == proto::r#type::Kind::Struct
+                && field_type.field_names.len() != field_type.subtypes.len()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Footer schema is corrupted: has {} field names and {} subtypes.",
+                        field_type.field_names.len(),
+                        field_type.subtypes.len(),
+                    ),
+                ));
+            }
+
+            for subtype_idx in 0..field_type.subtypes.len() {
+                let subtype_id = field_type.subtypes[subtype_idx];
+                if subtype_id <= type_id as u32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                    "Subtype has ID >= than its holder type: subtype_id={}, outer_type_id={}",
+                    subtype_id,
+                    type_id,
+                ),
+                    ));
+                }
+                if subtype_id >= max_type_id as u32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid subtype ID={}(should be less than max ID={})",
+                            subtype_id, max_type_id,
+                        ),
+                    ));
+                }
+                if subtype_idx > 0 && subtype_id < field_type.subtypes[subtype_idx - 1] {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid schema type order: types should be numbered in increasing order. Outer type ID={}, subtype_id={}, previous subtype_id={}",
+                            type_id,
+                            subtype_id,
+                            field_type.subtypes[subtype_idx - 1],
+                        ),
+                    ));
+                }
+            }
+        }
 
         Ok(footer)
     }

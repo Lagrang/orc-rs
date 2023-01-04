@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::io;
 use std::ops::Deref;
 use std::{
@@ -14,19 +16,28 @@ use prost::Message;
 pub struct ReaderOptions {
     pub file_end_pos: Option<u64>,
     pub compression_opts: CompressionFactory,
-    //TODO: pub allocator: &'a dyn std::alloc::Allocator,
+    //TODO: add custom allocator support, pub allocator: &'a dyn std::alloc::Allocator,
 }
 pub struct FileReader {}
 
 pub trait Reader {}
 
-struct FileVersion(u32, u32);
+pub struct FileVersion(u32, u32);
 
 struct TailReader<'a, T: Read + Seek> {
     file_reader: &'a PositionalReader<'a, T>,
     opts: &'a ReaderOptions,
     read_buffer: Bytes,
     file_end_pos: u64,
+}
+
+struct FileTail {
+    compression: CompressionFactory,
+    version: FileVersion,
+    header_size: u64,
+    content_size: u64,
+    row_count: u64,
+    metadata: HashMap<String, Bytes>,
 }
 
 impl<'a, T: Read + Seek> TailReader<'a, T> {
@@ -63,7 +74,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         })
     }
 
-    fn read(&self) -> Result<()> {
+    fn read(&self) -> Result<FileTail> {
         let (postscript, postscript_len) = self.read_postscript()?;
         let tail_size = postscript.footer_length() + postscript_len + 1;
         let file_size = self.file_end_pos + 1;
@@ -82,9 +93,21 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             version.0 = postscript.version[0];
             version.1 = postscript.version[1];
         }
+
         let footer = self.read_footer(&postscript, postscript_len)?;
 
-        Ok(())
+        Ok(FileTail {
+            compression: self.opts.compression_opts,
+            version,
+            header_size: footer.header_length(),
+            content_size: footer.content_length(),
+            row_count: footer.number_of_rows(),
+            metadata: footer
+                .metadata
+                .iter()
+                .map(|kv| (kv.name().to_owned(), kv.value().into()))
+                .collect(),
+        })
     }
 
     fn read_footer(
@@ -216,6 +239,13 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
                     ));
                 }
             }
+        }
+
+        if footer.encryption.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Encrypted files are not supported",
+            ));
         }
 
         Ok(footer)

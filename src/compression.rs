@@ -74,6 +74,7 @@ trait BlockCodec {
 struct DecompressionStream<BaseStream: Read, Codec: BlockCodec> {
     compressed_stream: BaseStream,
     codec: Codec,
+    compressed_chunk: Bytes,
     decompressed_chunk: Bytes,
     block_size: usize,
 }
@@ -84,7 +85,33 @@ impl<BaseStream: Read, Codec: BlockCodec> DecompressionStream<BaseStream, Codec>
             compressed_stream: compressed,
             codec,
             block_size: block_size as usize,
+            compressed_chunk: Vec::with_capacity(block_size as usize).into(),
             decompressed_chunk: Bytes::new(),
+        }
+    }
+
+    fn next_chunk(&mut self) -> Result<Option<Bytes>> {
+        // need more decompressed data
+        self.compressed_chunk.clear();
+        let compressed_bytes = Vec::with_capacity(self.block_size);
+        unsafe {
+            compressed_bytes.set_len(self.block_size);
+        }
+        let bytes_read = self.compressed_stream.read(&mut compressed_bytes)?;
+        if bytes_read == 0 {
+            return Ok(None);
+        }
+        unsafe {
+            compressed_bytes.set_len(bytes_read);
+        }
+        let compressed_chunk = Bytes::from(compressed_bytes);
+        let (compressed_size, is_compressed) = decode_header(&mut compressed_chunk);
+        if is_compressed {
+            self.decompressed_chunk = self
+                .codec
+                .decompress(&mut compressed_chunk.slice(..compressed_size))?;
+        } else {
+            self.decompressed_chunk = compressed_chunk;
         }
     }
 }
@@ -100,25 +127,25 @@ impl<BaseStream: Read, Codec: BlockCodec> Read for DecompressionStream<BaseStrea
                 remaining -= to_copy;
             } else {
                 // need more decompressed data
-                let next_chunk = Vec::with_capacity(self.block_size);
+                let compressed_bytes = Vec::with_capacity(self.block_size);
                 unsafe {
-                    next_chunk.set_len(self.block_size);
+                    compressed_bytes.set_len(self.block_size);
                 }
-                let bytes_read = self.compressed_stream.read(&mut next_chunk)?;
+                let bytes_read = self.compressed_stream.read(&mut compressed_bytes)?;
                 if bytes_read == 0 {
                     break;
                 }
                 unsafe {
-                    next_chunk.set_len(bytes_read);
+                    compressed_bytes.set_len(bytes_read);
                 }
-                let next_buf = Bytes::from(next_chunk);
-                let (compressed_size, is_compressed) = decode_header(&mut next_buf);
+                let compressed_chunk = Bytes::from(compressed_bytes);
+                let (compressed_size, is_compressed) = decode_header(&mut compressed_chunk);
                 if is_compressed {
                     self.decompressed_chunk = self
                         .codec
-                        .decompress(&mut next_buf.slice(..compressed_size))?;
+                        .decompress(&mut compressed_chunk.slice(..compressed_size))?;
                 } else {
-                    self.decompressed_chunk = next_buf;
+                    self.decompressed_chunk = compressed_chunk;
                 }
             }
         }

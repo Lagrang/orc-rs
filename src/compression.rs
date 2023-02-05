@@ -1,77 +1,118 @@
 use crate::proto;
 use bytes::{Buf, Bytes, BytesMut};
+use flate2::Status;
 use std::cmp;
-use std::io::{BufReader, Read, Result};
+use std::io::{Error, Read, Result};
 
-pub struct ZstdOptions {
-    pub dictionary: Bytes,
+pub struct CompressionRegistry {
+    snappy_codec: Box<dyn BlockCodec>,
+    zstd_codec: Box<dyn BlockCodec>,
+    lz4_codec: Box<dyn BlockCodec>,
+    zlib_codec: Box<dyn BlockCodec>,
 }
 
-impl Default for ZstdOptions {
+impl Default for CompressionRegistry {
     fn default() -> Self {
+        CompressionRegistry::new()
+    }
+}
+
+impl CompressionRegistry {
+    pub fn new() -> Self {
         Self {
-            dictionary: Default::default(),
+            snappy_codec: Box::new(SnappyCodec {}),
+            zstd_codec: Box::new(ZstdCodec {}),
+            lz4_codec: Box::new(Lz4Codec {}),
+            zlib_codec: Box::new(ZlibCodec::new()),
         }
     }
-}
 
-pub struct CompressionFactory {
-    zstd_opts: ZstdOptions,
-}
-
-impl Default for CompressionFactory {
-    fn default() -> Self {
-        Self {
-            zstd_opts: Default::default(),
-        }
-    }
-}
-
-impl CompressionFactory {
-    pub fn new(zstd_opts: ZstdOptions) -> Self {
-        Self { zstd_opts }
-    }
-
-    pub fn decoder(
-        &self,
-        compressed_stream: impl Read,
-        compression_type: proto::CompressionKind,
-    ) -> Result<Box<dyn Read>> {
+    pub fn decoder(&self, compression_type: proto::CompressionKind) -> Result<&dyn BlockCodec> {
         match compression_type {
-            proto::CompressionKind::Snappy => {
-                Ok(Box::new(snap::read::FrameDecoder::new(compressed_stream)))
-            }
-            proto::CompressionKind::Zstd => {
-                let decoder = if !self.zstd_opts.dictionary.is_empty() {
-                    zstd::Decoder::with_dictionary(
-                        BufReader::new(compressed_stream),
-                        &self.zstd_opts.dictionary,
-                    )
-                } else {
-                    zstd::Decoder::new(compressed_stream)
-                };
-                decoder.map(|decoder| {
-                    let reader: Box<dyn Read> = Box::new(decoder);
-                    reader
-                })
-            }
-            proto::CompressionKind::Lz4 => Ok(Box::new(lz4_flex::frame::FrameDecoder::new(
-                compressed_stream,
-            ))),
-            proto::CompressionKind::Zlib => {
-                Ok(Box::new(flate2::read::ZlibDecoder::new(compressed_stream)))
-            }
-            proto::CompressionKind::None => Ok(Box::new(compressed_stream)),
-            _ => panic!("Compression type '{:?}' is not supported", compression_type),
+            proto::CompressionKind::Snappy => Ok(self.snappy_codec.as_ref()),
+            proto::CompressionKind::Zstd => Ok(self.zstd_codec.as_ref()),
+            proto::CompressionKind::Lz4 => Ok(self.lz4_codec.as_ref()),
+            proto::CompressionKind::Zlib => Ok(self.zlib_codec.as_ref()),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Compression type '{compression_type:?}' is not supported"),
+            )),
         }
     }
 }
 
-trait BlockCodec {
-    fn decompress(&self, input: &mut dyn Buf) -> Result<Bytes>;
+pub trait BlockCodec {
+    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes>;
 }
 
-struct DecompressionStream<BaseStream: Read, Codec: BlockCodec> {
+#[derive(Debug, Default)]
+pub struct ZstdCodec;
+
+impl BlockCodec for ZstdCodec {
+    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
+        Ok(zstd::bulk::decompress(input, max_output_len)?.into())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SnappyCodec;
+
+impl BlockCodec for SnappyCodec {
+    fn decompress(&mut self, input: &[u8], _max_output_len: usize) -> Result<Bytes> {
+        let out_size = snap::raw::decompress_len(input)?;
+        let mut output = BytesMut::with_capacity(out_size);
+        snap::raw::Decoder::new().decompress(input, &mut output)?;
+        debug_assert_eq!(output.len(), out_size);
+        Ok(output.freeze())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Lz4Codec;
+
+impl BlockCodec for Lz4Codec {
+    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
+        let mut output = BytesMut::with_capacity(max_output_len);
+        let actual_len = lz4_flex::block::decompress_into(input, &mut output)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))?;
+        let mut result = output.freeze();
+        result.truncate(actual_len);
+        Ok(result)
+    }
+}
+
+#[derive(Debug)]
+pub struct ZlibCodec {
+    decoder: flate2::Decompress,
+}
+
+impl Default for ZlibCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ZlibCodec {
+    pub fn new() -> Self {
+        Self {
+            decoder: flate2::Decompress::new(false),
+        }
+    }
+}
+
+impl BlockCodec for ZlibCodec {
+    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
+        self.decoder.reset(false);
+        let mut output = BytesMut::with_capacity(max_output_len);
+        let status =
+            self.decoder
+                .decompress(input, &mut output, flate2::FlushDecompress::Finish)?;
+        debug_assert_eq!(status, Status::StreamEnd);
+        Ok(output.freeze())
+    }
+}
+
+struct DecompressionStream<BaseStream, Codec> {
     compressed_stream: BaseStream,
     /// End of stream indicator
     eos: bool,
@@ -120,12 +161,13 @@ impl<BaseStream: Read, Codec: BlockCodec> DecompressionStream<BaseStream, Codec>
 
         let mut read_from_stream = true;
         let mut header: Option<(usize, bool)> = None;
-        // we have pending uncompressed data in the current block
+        // have more compressed data in the current block
         if self.current_block.has_remaining() {
             if let h @ Some((compressed_size, _)) = self.decode_block_header() {
                 // Request more data from the stream: compressed size of the next chunk
                 // is greater than we currently have in the current block buffer.
-                // Otherwise, if we have enough data in the current buffer, we will skip stream read.
+                // Otherwise, if we have enough data in the current buffer, we will
+                // skip read from the underlying stream.
                 read_from_stream = compressed_size > self.current_block.remaining();
                 header = h;
             }
@@ -148,19 +190,23 @@ impl<BaseStream: Read, Codec: BlockCodec> DecompressionStream<BaseStream, Codec>
             }
 
             unsafe {
-                self.current_block.set_len(bytes_read);
+                self.current_block
+                    .set_len(self.current_block.remaining() + bytes_read);
             }
         }
 
-        // We didn't decode header from existing block buffer, try again with the new one
+        // We didn't decode header from existing block buffer,
+        // try again with the new one(expanded using more data
+        // from underlying stream).
         if header.is_none() {
             header = self.decode_block_header();
         }
 
         if let Some((compressed_size, is_compressed)) = header {
             if is_compressed {
-                let mut compressed_chunk = self.current_block.copy_to_bytes(compressed_size);
-                self.decompressed_chunk = self.codec.decompress(&mut compressed_chunk)?;
+                let compressed_chunk = self.current_block.copy_to_bytes(compressed_size);
+                self.decompressed_chunk =
+                    self.codec.decompress(&compressed_chunk, self.block_size)?;
             } else {
                 // `split_to` creates a new link to shared buffer of current block.
                 // This can prevent from reusing the existing block buffer at the next stream read.
@@ -168,10 +214,15 @@ impl<BaseStream: Read, Codec: BlockCodec> DecompressionStream<BaseStream, Codec>
                 self.decompressed_chunk = self.current_block.split_to(compressed_size).freeze();
             }
         } else {
-            // TODO: no more data in the stream to read the header.
-            // We need something like a 'backup' method to return bytes to the stream
-            // if the don't needed by this stream.
-            panic!("Unexpected stream end");
+            return Err(Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Current block with compressed data contains {} bytes. \
+                    Not enough data to read compressed block header from underlying data stream. \
+                    Looks like data is corrupted.",
+                    self.current_block.remaining()
+                ),
+            ));
         }
 
         Ok(true)
@@ -199,8 +250,8 @@ impl<BaseStream: Read, Codec: BlockCodec> DecompressionStream<BaseStream, Codec>
 }
 
 impl<BaseStream: Read, Codec: BlockCodec> Read for DecompressionStream<BaseStream, Codec> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let mut remaining = buf.len();
+    fn read(&mut self, output: &mut [u8]) -> Result<usize> {
+        let mut remaining = output.len();
         if remaining == 0 {
             return Ok(0);
         }
@@ -208,17 +259,18 @@ impl<BaseStream: Read, Codec: BlockCodec> Read for DecompressionStream<BaseStrea
         loop {
             if self.decompressed_chunk.has_remaining() {
                 let to_copy = cmp::min(self.decompressed_chunk.remaining(), remaining);
-                self.decompressed_chunk.copy_to_slice(&mut buf[..to_copy]);
+                self.decompressed_chunk
+                    .copy_to_slice(&mut output[..to_copy]);
                 remaining -= to_copy;
             }
 
-            // We read entire decompressed chunk before and still need more data
+            // We read all existing decompressed data and need more
             if remaining > 0 && self.decompress_next_block()? {
                 continue;
             }
             break;
         }
 
-        return Ok(buf.len() - remaining);
+        Ok(output.len() - remaining)
     }
 }

@@ -1,13 +1,13 @@
 use std::io::{Result, SeekFrom, *};
 
 pub struct PositionalReader<'a, READER: Read + Seek> {
-    reader: &'a READER,
+    reader: &'a mut READER,
     start_pos: u64,
     end_pos: u64,
 }
 
 impl<'a, READER: Read + Seek> PositionalReader<'a, READER> {
-    pub fn new(reader: &READER) -> Result<Self> {
+    pub fn new(reader: &'a mut READER) -> Result<Self> {
         let start_pos = reader.stream_position()?;
         let end_pos = reader.seek(SeekFrom::End(0))?;
         // TODO: do we need this seek to start?
@@ -24,7 +24,7 @@ impl<'a, READER: Read + Seek> PositionalReader<'a, READER> {
         self.end_pos - self.start_pos
     }
 
-    pub fn read_at(&self, pos: u64, buffer: &mut [u8]) -> Result<usize> {
+    pub fn read_at(&mut self, pos: u64, buffer: &mut [u8]) -> Result<usize> {
         self.reader.seek(SeekFrom::Start(self.start_pos + pos))?;
 
         let mut byte_read = 0;
@@ -36,9 +36,9 @@ impl<'a, READER: Read + Seek> PositionalReader<'a, READER> {
                         return Ok(byte_read);
                     }
                 }
-                res @ Err(e) => {
+                Err(e) => {
                     if e.kind() != ErrorKind::Interrupted {
-                        return res;
+                        return Err(e);
                     }
                 }
             }

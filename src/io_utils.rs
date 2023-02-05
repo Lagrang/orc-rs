@@ -1,5 +1,7 @@
 use std::io::{Result, SeekFrom, *};
 
+use bytes::BufMut;
+
 pub struct PositionalReader<'a, READER: Read + Seek> {
     reader: &'a mut READER,
     start_pos: u64,
@@ -24,15 +26,29 @@ impl<'a, READER: Read + Seek> PositionalReader<'a, READER> {
         self.end_pos - self.start_pos
     }
 
-    pub fn read_at(&mut self, pos: u64, buffer: &mut [u8]) -> Result<usize> {
+    pub fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> Result<usize> {
         self.reader.seek(SeekFrom::Start(self.start_pos + pos))?;
 
         let mut byte_read = 0;
         loop {
-            match self.reader.read(&mut buffer[byte_read..]) {
+            let slice = unsafe {
+                std::slice::from_raw_parts_mut(
+                    buffer.chunk_mut().as_mut_ptr(),
+                    buffer.chunk_mut().len(),
+                )
+            };
+            match self.reader.read(slice) {
                 Ok(read) => {
+                    if read == 0 {
+                        // end of file stream reached
+                        return Ok(byte_read);
+                    }
+
                     byte_read += read;
-                    if byte_read >= buffer.len() {
+                    unsafe {
+                        buffer.advance_mut(read);
+                    }
+                    if !buffer.has_remaining_mut() {
                         return Ok(byte_read);
                     }
                 }

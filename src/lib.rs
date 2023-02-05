@@ -5,5 +5,5 @@ pub mod proto {
 mod io_utils;
 
 pub mod compression;
-// pub mod reader;
-// pub use reader::new_reader;
+pub mod reader;
+pub use reader::new_reader;

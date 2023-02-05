@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::io;
 use std::ops::Deref;
@@ -7,32 +6,37 @@ use std::{
     io::{Read, Result, Seek},
 };
 
-use crate::compression::CompressionFactory;
+use crate::compression::{new_decompress_stream, CompressionRegistry};
 use crate::io_utils::PositionalReader;
 use crate::proto;
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 
 pub struct ReaderOptions {
     pub file_end_pos: Option<u64>,
-    pub compression_opts: CompressionFactory,
+    pub compression_opts: CompressionRegistry,
     //TODO: add custom allocator support, pub allocator: &'a dyn std::alloc::Allocator,
 }
-pub struct FileReader {}
 
 pub trait Reader {}
+
+pub struct FileReader {
+    tail: FileTail,
+}
+
+impl Reader for FileReader {}
 
 pub struct FileVersion(u32, u32);
 
 struct TailReader<'a, T: Read + Seek> {
-    file_reader: &'a PositionalReader<'a, T>,
-    opts: &'a ReaderOptions,
+    file_reader: &'a mut PositionalReader<'a, T>,
+    opts: ReaderOptions,
     read_buffer: Bytes,
     file_end_pos: u64,
 }
 
 struct FileTail {
-    compression: CompressionFactory,
+    compression: CompressionRegistry,
     version: FileVersion,
     header_size: u64,
     content_size: u64,
@@ -42,22 +46,22 @@ struct FileTail {
 
 impl<'a, T: Read + Seek> TailReader<'a, T> {
     fn new(
-        file_reader: &PositionalReader<'a, T>,
+        file_reader: &'a mut PositionalReader<'a, T>,
         file_end_pos: u64,
-        opts: &ReaderOptions,
+        opts: ReaderOptions,
     ) -> Result<Self> {
         // Try to read 16K from ORC file tail to get footer and postscript in one call.
         let tail_buf_cap: u64 = 16 * 1024;
-        let mut buffer = Vec::with_capacity(tail_buf_cap as usize);
-        unsafe {
-            buffer.set_len(buffer.capacity());
-        };
 
         let tail_start_pos = if file_end_pos > tail_buf_cap {
             file_end_pos - tail_buf_cap
         } else {
+            // TODO: error here!!!
             file_end_pos
         };
+
+        let mut buffer =
+            BytesMut::with_capacity(tail_buf_cap as usize).limit(tail_buf_cap as usize);
         let bytes_read = file_reader.read_at(tail_start_pos, &mut buffer)?;
         if bytes_read < 4 {
             return Err(io::Error::new(
@@ -66,15 +70,17 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             ));
         }
 
+        let mut buffer = buffer.into_inner();
+        buffer.truncate(bytes_read);
         Ok(TailReader {
             file_reader,
             opts,
-            read_buffer: Bytes::from(buffer).slice(..bytes_read),
+            read_buffer: buffer.freeze(),
             file_end_pos,
         })
     }
 
-    fn read(&self) -> Result<FileTail> {
+    fn read(mut self) -> Result<FileTail> {
         let (postscript, postscript_len) = self.read_postscript()?;
         let tail_size = postscript.footer_length() + postscript_len + 1;
         let file_size = self.file_end_pos + 1;
@@ -82,8 +88,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Invalid ORC file: tail size({} byte(s)) is greater than file size({} byte(s))",
-                    file_size, tail_size
+                    "Invalid ORC file: tail size({file_size} byte(s)) is greater than file size({tail_size} byte(s))",
                 ),
             ));
         }
@@ -105,7 +110,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             metadata: footer
                 .metadata
                 .iter()
-                .map(|kv| (kv.name().to_owned(), kv.value().into()))
+                .map(|kv| (kv.name().to_owned(), kv.value().to_vec().into()))
                 .collect(),
         })
     }
@@ -115,52 +120,66 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         postscript: &proto::PostScript,
         postscript_len: u64,
     ) -> Result<proto::Footer> {
-        let footer_len = postscript.footer_length() as usize;
-        let footer_buffer = if footer_len <= self.read_buffer.len() {
+        let declared_footer_len = postscript.footer_length() as usize;
+        let footer_buffer = if declared_footer_len <= self.read_buffer.len() {
             // footer already read into a buffer
             self.read_buffer
-                .slice(self.read_buffer.len() - footer_len..)
+                .slice(self.read_buffer.len() - declared_footer_len..)
         } else {
-            let new_buf = Vec::with_capacity(footer_len);
-            unsafe {
-                new_buf.set_len(new_buf.capacity());
-            }
+            let mut new_buf =
+                BytesMut::with_capacity(declared_footer_len).limit(declared_footer_len);
             let file_size = self.file_end_pos + 1;
             let tail_size = postscript.footer_length() + postscript_len + 1;
             let footer_pos = file_size - tail_size;
-            let footer_actual_len = self.file_reader.read_at(footer_pos, &mut new_buf)?;
-            if footer_actual_len != footer_len {
+            let actual_footer_len = self.file_reader.read_at(footer_pos, &mut new_buf)?;
+            if actual_footer_len != declared_footer_len {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
-                        "Invalid file footer size: expected length={}, actual footer size={}, postscript size={}, file size={}.",
-                        footer_len, footer_actual_len, postscript_len, file_size
+                        "Invalid file footer size: \
+                        expected length={declared_footer_len}, \
+                        actual footer size={actual_footer_len}, \
+                        postscript size={postscript_len}, \
+                        file size={file_size}.",
                     ),
                 ));
             }
-            Bytes::from(new_buf)
+            new_buf.into_inner().freeze()
         };
 
         // all data read from existing buffer, replace it with empty one
         self.read_buffer = Bytes::new();
         // decompress the footer
-        let footer_reader = self
+        let compression_codec = self
             .opts
             .compression_opts
-            .decoder(footer_buffer.reader(), postscript.compression())?;
-        let decompressed_footer_buf = Vec::with_capacity(footer_buffer.len());
-        footer_reader
-            .read_to_end(&mut decompressed_footer_buf)
+            .decoder(postscript.compression())?;
+        let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
+        #[allow(clippy::uninit_vec)]
+        unsafe {
+            decompressed_footer.set_len(decompressed_footer.capacity());
+        }
+        let mut footer_reader = footer_buffer.reader();
+        let mut footer_reader = new_decompress_stream(
+            &mut footer_reader,
+            compression_codec,
+            postscript.compression_block_size(),
+        );
+        let footer_len = footer_reader
+            .read_to_end(&mut decompressed_footer)
             .map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("ORC footer decompression failed: {}", err.to_string()),
+                    format!("ORC footer decompression failed: {err}"),
                 )
             })?;
-        let footer = proto::Footer::decode(decompressed_footer_buf.deref()).map_err(|err| {
+        unsafe {
+            decompressed_footer.set_len(footer_len);
+        }
+        let footer = proto::Footer::decode(decompressed_footer.deref()).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Footer protobuf damaged: '{}'", err.to_string()),
+                format!("Footer protobuf damaged: '{err}'"),
             )
         })?;
 
@@ -168,7 +187,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         if footer.types.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("ORC footer misses the schema(types vector is empty)",),
+                "ORC footer misses the schema(types vector is empty)",
             ));
         }
         // Schema tree should be numbered in increasing order, level by level.
@@ -192,7 +211,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         // Type_ID: 5
         let max_type_id = footer.types.len();
         for type_id in 0..max_type_id {
-            let field_type = footer.types[type_id];
+            let field_type = &footer.types[type_id];
             if field_type.kind() == proto::r#type::Kind::Struct
                 && field_type.field_names.len() != field_type.subtypes.len()
             {
@@ -212,18 +231,15 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                    "Subtype has ID >= than its holder type: subtype_id={}, outer_type_id={}",
-                    subtype_id,
-                    type_id,
-                ),
+                            "Subtype has ID >= than its holder type: subtype_id={subtype_id}, outer_type_id={type_id}",
+                        ),
                     ));
                 }
                 if subtype_id >= max_type_id as u32 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "Invalid subtype ID={}(should be less than max ID={})",
-                            subtype_id, max_type_id,
+                            "Invalid subtype ID={subtype_id}(should be less than max ID={max_type_id})",
                         ),
                     ));
                 }
@@ -231,9 +247,8 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "Invalid schema type order: types should be numbered in increasing order. Outer type ID={}, subtype_id={}, previous subtype_id={}",
-                            type_id,
-                            subtype_id,
+                            "Invalid schema type order: types should be numbered in increasing order. \
+                            Outer type ID={type_id}, subtype_id={subtype_id}, previous subtype_id={}",
                             field_type.subtypes[subtype_idx - 1],
                         ),
                     ));
@@ -259,7 +274,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         let postscript = proto::PostScript::decode(postscript_body).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Postscript protobuf damaged: '{}'", err.to_string()),
+                format!("Postscript protobuf damaged: '{err}'"),
             )
         })?;
         if postscript.magic() != "ORC" {
@@ -277,11 +292,11 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
     }
 }
 
-pub fn new_reader<T>(orc_file: &T, opts: &ReaderOptions) -> Result<impl Reader>
+pub fn new_reader<T>(orc_file: &mut T, opts: ReaderOptions) -> Result<impl Reader>
 where
     T: Read + Seek,
 {
-    let reader = PositionalReader::new(orc_file)?;
+    let mut reader = PositionalReader::new(orc_file)?;
 
     let stream_len = reader.len();
     let end_pos = opts.file_end_pos.unwrap_or(stream_len - 1);
@@ -289,11 +304,12 @@ where
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "ORC file stream length is {}, but end position(from read options) is {}",
-                stream_len, end_pos
+                "ORC file stream length is {stream_len}, but end position(from read options) is {end_pos}",
             ),
         ));
     }
 
-    Ok(reader)
+    let tail_reader = TailReader::new(&mut reader, end_pos, opts)?;
+    let tail = tail_reader.read()?;
+    Ok(FileReader { tail })
 }

@@ -1,5 +1,6 @@
+use crate::io_utils::UninitBytesMut;
 use crate::proto;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use flate2::Status;
 use std::cmp;
 use std::io::{Error, Read, Result};
@@ -55,7 +56,7 @@ impl CompressionRegistry {
         self.zlib_codec = new_codec;
     }
 
-    pub fn decoder(
+    pub fn codec(
         &mut self,
         compression_type: proto::CompressionKind,
     ) -> Result<&mut dyn BlockCodec> {
@@ -91,9 +92,9 @@ pub struct SnappyCodec;
 impl BlockCodec for SnappyCodec {
     fn decompress(&mut self, input: &[u8], _max_output_len: usize) -> Result<Bytes> {
         let out_size = snap::raw::decompress_len(input)?;
-        let mut output = BytesMut::with_capacity(out_size);
-        snap::raw::Decoder::new().decompress(input, &mut output)?;
-        debug_assert_eq!(output.len(), out_size);
+        let mut output = UninitBytesMut::new(out_size);
+        output.write_from(|write_into| snap::raw::Decoder::new().decompress(input, write_into))?;
+
         Ok(output.freeze())
     }
 }
@@ -103,12 +104,13 @@ pub struct Lz4Codec;
 
 impl BlockCodec for Lz4Codec {
     fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
-        let mut output = BytesMut::with_capacity(max_output_len);
-        let actual_len = lz4_flex::block::decompress_into(input, &mut output)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))?;
-        let mut result = output.freeze();
-        result.truncate(actual_len);
-        Ok(result)
+        let mut output = UninitBytesMut::new(max_output_len);
+        let actual_len = output.write_from(|write_into| {
+            lz4_flex::block::decompress_into(input, write_into).map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())
+            })
+        })?;
+        Ok(output.freeze())
     }
 }
 
@@ -134,11 +136,17 @@ impl ZlibCodec {
 impl BlockCodec for ZlibCodec {
     fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
         self.decoder.reset(false);
-        let mut output = BytesMut::with_capacity(max_output_len);
-        let status =
-            self.decoder
-                .decompress(input, &mut output, flate2::FlushDecompress::Finish)?;
-        debug_assert_eq!(status, Status::StreamEnd);
+        let mut output = UninitBytesMut::new(max_output_len);
+        output.write_from(
+            |write_into| -> std::result::Result<usize, flate2::DecompressError> {
+                let bytes_before = self.decoder.total_out();
+                let status =
+                    self.decoder
+                        .decompress(input, write_into, flate2::FlushDecompress::Finish)?;
+                debug_assert_eq!(status, Status::StreamEnd);
+                Ok((self.decoder.total_out() - bytes_before) as usize)
+            },
+        )?;
         Ok(output.freeze())
     }
 }
@@ -151,12 +159,14 @@ struct DecompressionStream<'codec, 'stream> {
     block_size: usize,
     /// Buffer is used for all read operations from the underlying stream.
     /// Allows to track how many bytes already decompressed.
-    current_block: BytesMut,
+    current_block: UninitBytesMut,
     /// Chunk of decompressed data which is not consumed yet.
     /// if `None`, then current block is not compressed and
     /// data should be read from `current_block`.
     decompressed_chunk: Bytes,
 }
+
+const HEADER_SIZE: usize = 4;
 
 impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
     fn new(
@@ -165,7 +175,7 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
         block_size: u64,
     ) -> Self {
         let block_size = block_size as usize;
-        let current_block: BytesMut = BytesMut::with_capacity(block_size);
+        let current_block = UninitBytesMut::new(block_size);
         Self {
             compressed_stream: compressed,
             eos: false,
@@ -209,25 +219,9 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
         }
 
         // need more data from the underlying stream to read entire block
-        if read_from_stream {
-            // Try to reuse current buffer:
-            //  - no remaining bytes left: `reserve` should reuse existing underlying buffer
-            // because buffer size at least as block size.
-            //  - we have remaining bytes: `reserve` will expand internal buffer if needed and
-            // copy remaining bytes to the beginning of the buffer.
-            self.current_block
-                .reserve(self.block_size + self.current_block.remaining());
-            let bytes_read = self.compressed_stream.read(&mut self.current_block)?;
-            if bytes_read == 0 {
-                // end of stream reached
-                self.eos = true;
-                return Ok(false);
-            }
-
-            unsafe {
-                self.current_block
-                    .set_len(self.current_block.remaining() + bytes_read);
-            }
+        if read_from_stream && self.read_from_stream(self.block_size + HEADER_SIZE)? == 0 {
+            // no more data in underlying stream
+            return Ok(false);
         }
 
         // We didn't decode header from existing block buffer,
@@ -237,16 +231,39 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
             header = self.decode_block_header();
         }
 
-        if let Some((compressed_size, is_compressed)) = header {
+        if let Some((block_size, is_compressed)) = header {
             if is_compressed {
-                let compressed_chunk = self.current_block.copy_to_bytes(compressed_size);
+                debug_assert!(
+                    block_size <= self.current_block.len(),
+                    "Compressed block size in header is greater than expected max compressed block size: \
+                    header value={block_size}, expected={}",
+                    self.current_block.len()
+                );
+                let compressed_chunk = self.current_block.copy_to_bytes(block_size);
                 self.decompressed_chunk =
                     self.codec.decompress(&compressed_chunk, self.block_size)?;
             } else {
+                // uncompressed block spans more than 'block_size' bytes, need more data from the underlying stream
+                if block_size > self.current_block.len() {
+                    // read missing bytes of current uncompressed block from the stream
+                    self.read_from_stream(block_size - self.current_block.len())?;
+
+                    if self.current_block.len() < block_size {
+                        return Err(Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Uncompressed block size is {block_size}, but only {} bytes available \
+                                from the ORC file stream. Looks like data is corrupted.",
+                                self.current_block.len()
+                            ),
+                        ));
+                    }
+                }
+
                 // `split_to` creates a new link to shared buffer of current block.
                 // This can prevent from reusing the existing block buffer at the next stream read.
                 // To make reuse to happen, decompressed chunk is released before current block is reused.
-                self.decompressed_chunk = self.current_block.split_to(compressed_size).freeze();
+                self.decompressed_chunk = self.current_block.split_to(block_size).freeze();
             }
         } else {
             return Err(Error::new(
@@ -263,6 +280,19 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
         Ok(true)
     }
 
+    fn read_from_stream(&mut self, read_bytes: usize) -> Result<usize> {
+        self.current_block.ensure_capacity(read_bytes);
+
+        let bytes_read = self
+            .current_block
+            .write_from(|write_into| self.compressed_stream.read(write_into))?;
+
+        // end of stream reached
+        self.eos = (bytes_read == 0);
+
+        Ok(bytes_read)
+    }
+
     /// Decode header which consist of:
     /// - block size
     /// - flag which is indicate that this block is compressed or not.
@@ -273,11 +303,11 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
             return None;
         }
 
-        let mut header = [0; 4];
+        let mut header = [0; HEADER_SIZE];
         // Least significant bit of first byte is indicate that data is compressed.
         // Next 7 bit + 2 bytes represent the block size.
         self.current_block.copy_to_slice(&mut header[..3]);
-        let is_compressed = header[0] & 1 == 1;
+        let is_compressed = header[0] & 1 == 0;
         // skip LSB with compression indicator
         let block_len = u32::from_le_bytes(header) as usize >> 1;
         Some((block_len, is_compressed))

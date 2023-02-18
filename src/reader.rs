@@ -7,11 +7,12 @@ use std::{
 };
 
 use crate::compression::{new_decompress_stream, CompressionRegistry};
-use crate::io_utils::PositionalReader;
+use crate::io_utils::{self, PositionalReader, UninitBytesMut};
 use crate::proto;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 
+#[derive(Default)]
 pub struct ReaderOptions {
     pub file_end_pos: Option<u64>,
     pub compression_opts: CompressionRegistry,
@@ -60,8 +61,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             file_end_pos
         };
 
-        let mut buffer =
-            BytesMut::with_capacity(tail_buf_cap as usize).limit(tail_buf_cap as usize);
+        let mut buffer = UninitBytesMut::new(tail_buf_cap as usize);
         let bytes_read = file_reader.read_at(tail_start_pos, &mut buffer)?;
         if bytes_read < 4 {
             return Err(io::Error::new(
@@ -70,8 +70,6 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             ));
         }
 
-        let mut buffer = buffer.into_inner();
-        buffer.truncate(bytes_read);
         Ok(TailReader {
             file_reader,
             opts,
@@ -126,8 +124,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             self.read_buffer
                 .slice(self.read_buffer.len() - declared_footer_len..)
         } else {
-            let mut new_buf =
-                BytesMut::with_capacity(declared_footer_len).limit(declared_footer_len);
+            let mut new_buf = UninitBytesMut::new(declared_footer_len);
             let file_size = self.file_end_pos + 1;
             let tail_size = postscript.footer_length() + postscript_len + 1;
             let footer_pos = file_size - tail_size;
@@ -144,16 +141,13 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
                     ),
                 ));
             }
-            new_buf.into_inner().freeze()
+            new_buf.freeze()
         };
 
         // all data read from existing buffer, replace it with empty one
         self.read_buffer = Bytes::new();
         // decompress the footer
-        let compression_codec = self
-            .opts
-            .compression_opts
-            .decoder(postscript.compression())?;
+        let compression_codec = self.opts.compression_opts.codec(postscript.compression())?;
         let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
         #[allow(clippy::uninit_vec)]
         unsafe {
@@ -269,7 +263,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
     fn read_postscript(&mut self) -> Result<(proto::PostScript, u64)> {
         let postscript_len = self.read_buffer[self.read_buffer.len() - 1] as usize;
         let postscript_start_pos = self.read_buffer.len() - postscript_len - 1;
-        let postscript_body = &self.read_buffer[postscript_start_pos..];
+        let postscript_body = &self.read_buffer[postscript_start_pos..self.read_buffer.len() - 1];
 
         let postscript = proto::PostScript::decode(postscript_body).map_err(|err| {
             io::Error::new(
@@ -312,4 +306,23 @@ where
     let tail_reader = TailReader::new(&mut reader, end_pos, opts)?;
     let tail = tail_reader.read()?;
     Ok(FileReader { tail })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TailReader;
+    use crate::io_utils::PositionalReader;
+
+    #[test]
+    fn snappy_footer() {
+        let mut file = std::fs::File::open(
+            "/home/lagrang/Projects/databases/orc/examples/TestOrcFile.testSnappy.orc",
+        )
+        .unwrap();
+        let mut file_reader = PositionalReader::new(&mut file).unwrap();
+        let end_pos = file_reader.end_position();
+        let tail_reader = TailReader::new(&mut file_reader, end_pos, Default::default()).unwrap();
+        let tail = tail_reader.read().unwrap();
+        assert!(tail.row_count > 0);
+    }
 }

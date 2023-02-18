@@ -5,11 +5,11 @@ use flate2::Status;
 use std::cmp;
 use std::io::{Error, Read, Result};
 
-pub fn new_decompress_stream<'stream>(
-    input: &'stream mut dyn Read,
-    codec: &'stream mut dyn BlockCodec,
+pub fn new_decompress_stream<'codec, Input: Read + 'codec>(
+    input: Input,
+    codec: &'codec mut dyn BlockCodec,
     compressed_block_size: u64,
-) -> impl Read + 'stream {
+) -> impl Read + 'codec {
     DecompressionStream::new(codec, input, compressed_block_size)
 }
 
@@ -151,8 +151,8 @@ impl BlockCodec for ZlibCodec {
     }
 }
 
-struct DecompressionStream<'codec, 'stream> {
-    compressed_stream: &'stream mut dyn Read,
+struct DecompressionStream<'codec, Input: Read> {
+    compressed_stream: Input,
     /// End of stream indicator
     eos: bool,
     codec: &'codec mut dyn BlockCodec,
@@ -168,12 +168,8 @@ struct DecompressionStream<'codec, 'stream> {
 
 const HEADER_SIZE: usize = 4;
 
-impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
-    fn new(
-        codec: &'codec mut dyn BlockCodec,
-        compressed: &'stream mut dyn Read,
-        block_size: u64,
-    ) -> Self {
+impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
+    fn new(codec: &'codec mut dyn BlockCodec, compressed: Input, block_size: u64) -> Self {
         let block_size = block_size as usize;
         let current_block = UninitBytesMut::new(block_size);
         Self {
@@ -314,7 +310,7 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
     }
 }
 
-impl<'codec, 'stream> Read for DecompressionStream<'codec, 'stream> {
+impl<'codec, Input: Read> Read for DecompressionStream<'codec, Input> {
     fn read(&mut self, output: &mut [u8]) -> Result<usize> {
         let max_size = output.len();
         let mut remaining = max_size;

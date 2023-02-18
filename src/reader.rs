@@ -145,18 +145,18 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             new_buf.freeze()
         };
 
-        // all data read from existing buffer, replace it with empty one
+        // postscript and footer read from the buffer, release it
         self.read_buffer = Bytes::new();
+
         // decompress the footer
         let compression_codec = self.opts.compression_opts.codec(postscript.compression())?;
         let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
-        let mut footer_reader = footer_buffer.reader();
         let mut footer_reader = new_decompress_stream(
-            &mut footer_reader,
+            footer_buffer.reader(),
             compression_codec,
             postscript.compression_block_size(),
         );
-        let footer_len = footer_reader
+        footer_reader
             .read_to_end(&mut decompressed_footer)
             .map_err(|err| {
                 io::Error::new(
@@ -164,9 +164,7 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
                     format!("ORC footer decompression failed: {err}"),
                 )
             })?;
-        unsafe {
-            decompressed_footer.set_len(footer_len);
-        }
+
         let footer = proto::Footer::decode(decompressed_footer.deref()).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -256,6 +254,8 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
 
         Ok(footer)
     }
+
+    fn read_schema(&self) {}
 
     fn read_postscript(&mut self) -> Result<(proto::PostScript, u64)> {
         let postscript_len = self.read_buffer[self.read_buffer.len() - 1] as usize;

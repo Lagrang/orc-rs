@@ -316,16 +316,19 @@ impl<'codec, 'stream> DecompressionStream<'codec, 'stream> {
 
 impl<'codec, 'stream> Read for DecompressionStream<'codec, 'stream> {
     fn read(&mut self, output: &mut [u8]) -> Result<usize> {
-        let mut remaining = output.len();
+        let max_size = output.len();
+        let mut remaining = max_size;
         if remaining == 0 {
             return Ok(0);
         }
 
+        let mut out_buf = output;
         loop {
             if self.decompressed_chunk.has_remaining() {
                 let to_copy = cmp::min(self.decompressed_chunk.remaining(), remaining);
                 self.decompressed_chunk
-                    .copy_to_slice(&mut output[..to_copy]);
+                    .copy_to_slice(&mut out_buf[..to_copy]);
+                out_buf = &mut out_buf[to_copy..];
                 remaining -= to_copy;
             }
 
@@ -336,6 +339,6 @@ impl<'codec, 'stream> Read for DecompressionStream<'codec, 'stream> {
             break;
         }
 
-        Ok(output.len() - remaining)
+        Ok(max_size - remaining)
     }
 }

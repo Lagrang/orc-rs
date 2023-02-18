@@ -30,10 +30,7 @@ impl UninitBytesMut {
         }
 
         let mut new_buf = BytesMut::with_capacity(new_cap);
-        unsafe {
-            new_buf.set_len(remaining_bytes);
-        }
-        new_buf.copy_from_slice(&mut self.buffer);
+        new_buf.extend_from_slice(&self.buffer);
         self.buffer = new_buf;
     }
 

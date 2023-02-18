@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::compression::{new_decompress_stream, CompressionRegistry};
-use crate::io_utils::{self, PositionalReader, UninitBytesMut};
+use crate::io_utils::{PositionalReader, UninitBytesMut};
 use crate::proto;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use prost::Message;
 
 #[derive(Default)]
@@ -27,6 +27,7 @@ pub struct FileReader {
 
 impl Reader for FileReader {}
 
+#[derive(PartialEq, Eq, Debug)]
 pub struct FileVersion(u32, u32);
 
 struct TailReader<'a, T: Read + Seek> {
@@ -149,10 +150,6 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         // decompress the footer
         let compression_codec = self.opts.compression_opts.codec(postscript.compression())?;
         let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            decompressed_footer.set_len(decompressed_footer.capacity());
-        }
         let mut footer_reader = footer_buffer.reader();
         let mut footer_reader = new_decompress_stream(
             &mut footer_reader,
@@ -312,17 +309,19 @@ where
 mod tests {
     use super::TailReader;
     use crate::io_utils::PositionalReader;
+    use crate::reader::FileVersion;
 
     #[test]
     fn snappy_footer() {
-        let mut file = std::fs::File::open(
-            "/home/lagrang/Projects/databases/orc/examples/TestOrcFile.testSnappy.orc",
-        )
-        .unwrap();
+        let mut file = std::fs::File::open("src/test_files/TestOrcFile.testSnappy.orc").unwrap();
         let mut file_reader = PositionalReader::new(&mut file).unwrap();
         let end_pos = file_reader.end_position();
         let tail_reader = TailReader::new(&mut file_reader, end_pos, Default::default()).unwrap();
         let tail = tail_reader.read().unwrap();
-        assert!(tail.row_count > 0);
+        assert_eq!(tail.row_count, 10000);
+        assert_eq!(tail.content_size, 126061);
+        assert_eq!(tail.header_size, 3);
+        assert_eq!(tail.version, FileVersion(0, 12));
+        assert!(tail.metadata.is_empty());
     }
 }

@@ -3,6 +3,7 @@ pub mod proto {
 }
 
 mod io_utils;
+mod schema;
 
 pub mod compression;
 pub mod reader;

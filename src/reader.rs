@@ -8,7 +8,8 @@ use std::{
 
 use crate::compression::{new_decompress_stream, CompressionRegistry};
 use crate::io_utils::{PositionalReader, UninitBytesMut};
-use crate::proto::{self, Type};
+use crate::proto::{self};
+use crate::schema::read_schema;
 use bytes::{Buf, Bytes};
 use prost::Message;
 
@@ -27,7 +28,7 @@ pub struct FileReader {
 
 impl Reader for FileReader {}
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub struct FileVersion(u32, u32);
 
 struct TailReader<'a, T: Read + Seek> {
@@ -37,8 +38,9 @@ struct TailReader<'a, T: Read + Seek> {
     file_end_pos: u64,
 }
 
+#[derive(Debug)]
 struct FileTail {
-    compression: CompressionRegistry,
+    compression: proto::CompressionKind,
     version: FileVersion,
     header_size: u64,
     content_size: u64,
@@ -46,6 +48,8 @@ struct FileTail {
     row_index_stride: u32,
     metadata: HashMap<String, Bytes>,
     schema: arrow::datatypes::Schema,
+    column_statistics: Vec<proto::ColumnStatistics>,
+    stripes: Vec<proto::StripeInformation>,
 }
 
 impl<'a, T: Read + Seek> TailReader<'a, T> {
@@ -108,12 +112,10 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
             ));
         }
 
-        let schema = self.read_schema(&footer.types)?;
-        //footer.stripes[0];
-        // footer.statistics[0];
+        let schema = read_schema(&footer.types, &footer.statistics)?;
 
         Ok(FileTail {
-            compression: self.opts.compression_opts,
+            compression: postscript.compression(),
             version,
             header_size: footer.header_length(),
             content_size: footer.content_length(),
@@ -125,6 +127,8 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
                 .map(|kv| (kv.name().to_owned(), kv.value().to_vec().into()))
                 .collect(),
             schema,
+            column_statistics: footer.statistics,
+            stripes: footer.stripes,
         })
     }
 
@@ -162,22 +166,27 @@ impl<'a, T: Read + Seek> TailReader<'a, T> {
         // postscript and footer read from the buffer, release it
         self.read_buffer = Bytes::new();
 
-        // decompress the footer
-        let compression_codec = self.opts.compression_opts.codec(postscript.compression())?;
-        let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
-        let mut footer_reader = new_decompress_stream(
-            footer_buffer.reader(),
-            compression_codec,
-            postscript.compression_block_size(),
-        );
-        footer_reader
-            .read_to_end(&mut decompressed_footer)
-            .map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("ORC footer decompression failed: {err}"),
-                )
-            })?;
+        let decompressed_footer = if postscript.compression() != proto::CompressionKind::None {
+            // decompress the footer
+            let compression_codec = self.opts.compression_opts.codec(postscript.compression())?;
+            let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
+            let mut footer_reader = new_decompress_stream(
+                footer_buffer.reader(),
+                compression_codec,
+                postscript.compression_block_size(),
+            );
+            footer_reader
+                .read_to_end(&mut decompressed_footer)
+                .map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("ORC footer decompression failed: {err}"),
+                    )
+                })?;
+            decompressed_footer
+        } else {
+            footer_buffer.to_vec()
+        };
 
         let footer = proto::Footer::decode(decompressed_footer.deref()).map_err(|err| {
             io::Error::new(
@@ -239,21 +248,274 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::TailReader;
+    use std::cell::Cell;
+    use std::collections::HashMap;
+
+    use arrow::datatypes;
+    use googletest::matcher::Matcher;
+    use googletest::matchers::eq;
+    use googletest::{matcher::MatcherResult, verify_that, Result};
+
+    use super::{FileTail, TailReader};
     use crate::io_utils::PositionalReader;
     use crate::reader::FileVersion;
+    use crate::test_utils::hashmap_eq;
+
+    struct FileTailMatcher {
+        expected: FileTail,
+        err_msg: Cell<String>,
+    }
+
+    impl Matcher<FileTail> for FileTailMatcher {
+        fn matches(&self, actual: &FileTail) -> MatcherResult {
+            let result = verify_that!(self.expected.content_size, eq(actual.content_size))
+                .and(verify_that!(
+                    self.expected.header_size,
+                    eq(actual.header_size)
+                ))
+                .and(verify_that!(
+                    self.expected.compression,
+                    eq(actual.compression)
+                ))
+                .and(verify_that!(
+                    self.expected.metadata,
+                    hashmap_eq(&actual.metadata)
+                ))
+                .and(verify_that!(self.expected.version, eq(actual.version)))
+                .and(verify_that!(self.expected.row_count, eq(actual.row_count)))
+                .and(verify_that!(
+                    self.expected.row_index_stride,
+                    eq(actual.row_index_stride)
+                ))
+                .and(verify_that!(&self.expected.schema, eq(&actual.schema)));
+            // .and(verify_that!(&self.expected.stripes, eq(&actual.stripes)))
+            // .and(verify_that!(
+            //     &self.expected.column_statistics,
+            //     eq(&actual.column_statistics)
+            // ));
+
+            if let Some(err) = result.as_ref().err() {
+                self.err_msg.set(err.to_string());
+            }
+
+            result
+                .map(|_| MatcherResult::Matches)
+                .unwrap_or(MatcherResult::DoesNotMatch)
+        }
+
+        fn describe(&self, matcher_result: MatcherResult) -> String {
+            match matcher_result {
+                MatcherResult::Matches => format!("is same as {:?}", self.expected),
+                MatcherResult::DoesNotMatch => {
+                    format!(" is not the same as expected: {}", self.err_msg.take())
+                }
+            }
+        }
+    }
+
+    fn same_tail(expected: FileTail) -> FileTailMatcher {
+        FileTailMatcher {
+            expected,
+            err_msg: Cell::default(),
+        }
+    }
 
     #[test]
-    fn snappy_footer() {
-        let mut file = std::fs::File::open("src/test_files/TestOrcFile.testSnappy.orc").unwrap();
-        let mut file_reader = PositionalReader::new(&mut file).unwrap();
-        let end_pos = file_reader.end_position();
-        let tail_reader = TailReader::new(&mut file_reader, end_pos, Default::default()).unwrap();
-        let tail = tail_reader.read().unwrap();
-        assert_eq!(tail.row_count, 10000);
-        assert_eq!(tail.content_size, 126061);
-        assert_eq!(tail.header_size, 3);
-        assert_eq!(tail.version, FileVersion(0, 12));
-        assert!(tail.metadata.is_empty());
+    fn test_file_tail() -> Result<()> {
+        for (file_name, footer) in prepared_footers() {
+            let mut file = std::fs::File::open(format!("src/test_files/{file_name}")).unwrap();
+            let mut file_reader = PositionalReader::new(&mut file).unwrap();
+            let end_pos = file_reader.end_position();
+            let tail_reader =
+                TailReader::new(&mut file_reader, end_pos, Default::default()).unwrap();
+            let tail = tail_reader.read().unwrap();
+            verify_that!(tail, same_tail(footer))?
+        }
+        Ok(())
+    }
+
+    fn prepared_footers() -> HashMap<String, FileTail> {
+        let mut footers = HashMap::new();
+        footers.insert(
+            "TestOrcFile.testSnappy.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::Snappy,
+                content_size: 126061,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 10000,
+                row_index_stride: 10000,
+                version: FileVersion(0, 12),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("int1", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
+                ]),
+            },
+        );
+
+        footers.insert(
+            "nulls-at-end-snappy.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::Snappy,
+                content_size: 366347,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 70000,
+                row_index_stride: 10000,
+                version: FileVersion(0, 12),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("_col0", datatypes::DataType::Int8, false),
+                    datatypes::Field::new("_col1", datatypes::DataType::Int16, false),
+                    datatypes::Field::new("_col2", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col3", datatypes::DataType::Int64, false),
+                    datatypes::Field::new("_col4", datatypes::DataType::Float32, false),
+                    datatypes::Field::new("_col5", datatypes::DataType::Float64, false),
+                    datatypes::Field::new("_col6", datatypes::DataType::Boolean, false),
+                ]),
+            },
+        );
+
+        footers.insert(
+            "TestVectorOrcFile.testLz4.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::Lz4,
+                content_size: 120952,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 10000,
+                row_index_stride: 10000,
+                version: FileVersion(0, 12),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("x", datatypes::DataType::Int64, false),
+                    datatypes::Field::new("y", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("z", datatypes::DataType::Int64, false),
+                ]),
+            },
+        );
+
+        // footers.insert(
+        //     "TestVectorOrcFile.testLzo.orc".to_string(),
+        //     FileTail {
+        //         column_statistics: vec![],
+        //         stripes: vec![],
+        //         compression: crate::proto::CompressionKind::Lzo,
+        //         content_size: 120955,
+        //         header_size: 3,
+        //         metadata: HashMap::new(),
+        //         row_count: 10000,
+        //         row_index_stride: 10000,
+        //         version: FileVersion(0, 12),
+        //         schema: datatypes::Schema::new(vec![
+        //             datatypes::Field::new("x", datatypes::DataType::Int64, false),
+        //             datatypes::Field::new("y", datatypes::DataType::Int32, false),
+        //             datatypes::Field::new("z", datatypes::DataType::Int64, false),
+        //         ]),
+        //     },
+        // );
+
+        footers.insert(
+            "TestVectorOrcFile.testZstd.0.12.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::Zstd,
+                content_size: 120734,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 10000,
+                row_index_stride: 10000,
+                version: FileVersion(0, 12),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("x", datatypes::DataType::Int64, false),
+                    datatypes::Field::new("y", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("z", datatypes::DataType::Int64, false),
+                ]),
+            },
+        );
+
+        footers.insert(
+            "demo-11-zlib.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::Zlib,
+                content_size: 396823,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 1920800,
+                row_index_stride: 10000,
+                version: FileVersion(0, 11),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                ]),
+            },
+        );
+
+        footers.insert(
+            "demo-12-zlib.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::Zlib,
+                content_size: 45592,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 1920800,
+                row_index_stride: 10000,
+                version: FileVersion(0, 12),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                ]),
+            },
+        );
+
+        footers.insert(
+            "demo-11-none.orc".to_string(),
+            FileTail {
+                column_statistics: vec![],
+                stripes: vec![],
+                compression: crate::proto::CompressionKind::None,
+                content_size: 5069718,
+                header_size: 3,
+                metadata: HashMap::new(),
+                row_count: 1920800,
+                row_index_stride: 10000,
+                version: FileVersion(0, 11),
+                schema: datatypes::Schema::new(vec![
+                    datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
+                    datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
+                    datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                ]),
+            },
+        );
+        footers
     }
 }

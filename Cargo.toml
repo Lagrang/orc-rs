@@ -15,5 +15,8 @@ lz4_flex = { version = "0.10.0", default-features = false, features = [
 ] }
 flate2 = "1.0.25"
 
+[dev-dependencies]
+googletest = "0.3.0"
+
 [build-dependencies]
 prost-build = { version = "0.11.0" }

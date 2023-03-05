@@ -105,7 +105,7 @@ pub struct Lz4Codec;
 impl BlockCodec for Lz4Codec {
     fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
         let mut output = UninitBytesMut::new(max_output_len);
-        let actual_len = output.write_from(|write_into| {
+        output.write_from(|write_into| {
             lz4_flex::block::decompress_into(input, write_into).map_err(|err| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())
             })

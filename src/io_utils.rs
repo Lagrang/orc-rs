@@ -1,4 +1,4 @@
-use std::io::{Result, SeekFrom, *};
+use std::io::{Result, *};
 use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -8,7 +8,7 @@ pub struct UninitBytesMut {
 }
 
 impl UninitBytesMut {
-    // Creates mutable byte buffer with specified capacity.
+    /// Creates mutable byte buffer with specified capacity.
     pub fn new(capacity: usize) -> Self {
         UninitBytesMut {
             buffer: BytesMut::with_capacity(capacity),
@@ -19,7 +19,7 @@ impl UninitBytesMut {
         self.buffer.freeze()
     }
 
-    // Reserve enough bytes in the buffer to accommodate write of `capacity` bytes.
+    /// Reserve enough bytes in the buffer to accommodate write of `capacity` bytes.
     pub fn ensure_capacity(&mut self, capacity: usize) {
         // TODO: need optimization here
         let remaining_bytes = self.buffer.remaining();
@@ -106,36 +106,18 @@ unsafe impl BufMut for UninitBytesMut {
     }
 }
 
-pub struct PositionalReader<'a, READER: Read + Seek> {
-    reader: &'a mut READER,
-    start_pos: u64,
-    end_pos: u64,
-}
+pub trait PositionalReader {
+    fn start_pos(&self) -> u64;
+    fn end_pos(&self) -> u64;
+    fn seek_from_start(&mut self, pos: u64) -> Result<u64>;
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
 
-impl<'a, READER: Read + Seek> PositionalReader<'a, READER> {
-    pub fn new(reader: &'a mut READER) -> Result<Self> {
-        let start_pos = reader.stream_position()?;
-        let end_pos = reader.seek(SeekFrom::End(0))?;
-        // TODO: do we need this seek to start?
-        assert_eq!(reader.seek(std::io::SeekFrom::Start(start_pos))?, start_pos);
-        Ok(Self {
-            reader,
-            start_pos,
-            end_pos,
-        })
+    fn len(&self) -> u64 {
+        self.end_pos() - self.start_pos()
     }
 
-    #[inline(always)]
-    pub fn len(&self) -> u64 {
-        self.end_pos - self.start_pos
-    }
-
-    pub fn end_position(&self) -> u64 {
-        self.end_pos
-    }
-
-    pub fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> Result<usize> {
-        self.reader.seek(SeekFrom::Start(self.start_pos + pos))?;
+    fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> Result<usize> {
+        self.seek_from_start(pos)?;
 
         let mut byte_read = 0;
         loop {
@@ -145,7 +127,7 @@ impl<'a, READER: Read + Seek> PositionalReader<'a, READER> {
                     buffer.chunk_mut().len(),
                 )
             };
-            match self.reader.read(slice) {
+            match self.read(slice) {
                 Ok(read) => {
                     if read == 0 {
                         // end of file stream reached

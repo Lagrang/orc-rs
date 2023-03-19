@@ -1,0 +1,4 @@
+edition = "2021"
+
+wrap_comments = false
+format_generated_files = false

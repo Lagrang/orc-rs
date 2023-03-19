@@ -4,10 +4,13 @@ pub mod proto {
 
 mod io_utils;
 mod schema;
-mod stats;
+mod stripe;
+mod tail;
 #[cfg(test)]
-mod test_utils;
+mod test;
 
+pub mod column_reader;
 pub mod compression;
 pub mod reader;
+pub mod source;
 pub use reader::new_reader;

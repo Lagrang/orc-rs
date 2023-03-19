@@ -5,7 +5,7 @@ use flate2::Status;
 use std::cmp;
 use std::io::{Error, Read, Result};
 
-pub fn new_decompress_stream<'codec, Input: Read + 'codec>(
+pub(crate) fn new_decompress_stream<'codec, Input: Read + 'codec>(
     input: Input,
     codec: &'codec mut dyn BlockCodec,
     compressed_block_size: u64,
@@ -13,6 +13,7 @@ pub fn new_decompress_stream<'codec, Input: Read + 'codec>(
     DecompressionStream::new(codec, input, compressed_block_size)
 }
 
+/// Compression registry contains links to codecs for all supported compression formats.
 pub struct CompressionRegistry {
     snappy_codec: Box<dyn BlockCodec>,
     zstd_codec: Box<dyn BlockCodec>,
@@ -27,6 +28,7 @@ impl Default for CompressionRegistry {
 }
 
 impl CompressionRegistry {
+    /// Creates new compression registry with default codecs implementation.
     pub fn new() -> Self {
         Self {
             snappy_codec: Box::new(SnappyCodec {}),
@@ -56,6 +58,9 @@ impl CompressionRegistry {
         self.zlib_codec = new_codec;
     }
 
+    /// Find the codec for passed compression type.
+    ///
+    /// Returns an error if compression is not supported.
     pub fn codec(
         &mut self,
         compression_type: proto::CompressionKind,
@@ -284,7 +289,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
             .write_from(|write_into| self.compressed_stream.read(write_into))?;
 
         // end of stream reached
-        self.eos = (bytes_read == 0);
+        self.eos = bytes_read == 0;
 
         Ok(bytes_read)
     }

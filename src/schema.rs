@@ -12,13 +12,8 @@ pub fn read_schema(
 ) -> Result<datatypes::Schema> {
     validate_proto_schema(types)?;
 
-    let mut fields: Vec<datatypes::Field> = vec![];
-    let mut i = 0;
-    while i < types.len() {
-        let (mut field, next_col) = read_field("", i, types, fields.len(), col_stats)?;
-        fields.append(&mut field);
-        i = next_col;
-    }
+    // read root struct with all columns
+    let (fields, _) = read_field("", 0, types, 0, 0, col_stats)?;
 
     Ok(datatypes::Schema::new(fields))
 }
@@ -27,21 +22,23 @@ fn read_field<N: Into<String>>(
     name: N,
     type_idx: usize,
     types: &Vec<proto::Type>,
+    depth: usize,
     column_index: usize,
     col_stats: &Vec<proto::ColumnStatistics>,
 ) -> Result<(Vec<datatypes::Field>, usize)> {
-    let field_type = &types[type_idx];
+    let col_type = &types[type_idx];
     let stats = &col_stats[column_index];
     let name = name.into();
 
-    match field_type.kind() {
+    match col_type.kind() {
         proto::r#type::Kind::List => {
-            check_children_count(field_type, 1, &name)?;
+            check_children_count(col_type, 1, &name)?;
 
             let (mut inner_type, _) = read_field(
-                &field_type.field_names[field_type.subtypes[0] as usize],
+                "inner",
                 type_idx + 1,
                 types,
+                depth + 1,
                 column_index,
                 col_stats,
             )?;
@@ -57,14 +54,26 @@ fn read_field<N: Into<String>>(
             ))
         }
         proto::r#type::Kind::Map => {
-            check_children_count(field_type, 2, &name)?;
+            check_children_count(col_type, 2, &name)?;
 
-            let (mut key_type, _) =
-                read_field("key", type_idx + 1, types, column_index, col_stats)?;
-            debug_assert!(key_type.len() == 1);
-            let (mut value_type, _) =
-                read_field("value", type_idx + 2, types, column_index, col_stats)?;
-            debug_assert!(value_type.len() == 1);
+            let (mut key_type, _) = read_field(
+                "key",
+                type_idx + 1,
+                types,
+                depth + 1,
+                column_index,
+                col_stats,
+            )?;
+            debug_assert_eq!(key_type.len(), 1);
+            let (mut value_type, _) = read_field(
+                "value",
+                type_idx + 2,
+                types,
+                depth + 1,
+                column_index,
+                col_stats,
+            )?;
+            debug_assert_eq!(value_type.len(), 1);
 
             Ok((
                 vec![datatypes::Field::new(
@@ -86,23 +95,24 @@ fn read_field<N: Into<String>>(
             ))
         }
         proto::r#type::Kind::Struct => {
-            has_children(field_type, &name)?;
+            has_children(col_type, &name)?;
 
-            let mut subfields = Vec::with_capacity(field_type.subtypes.len());
-            for (i, subtype_index) in field_type.subtypes.iter().enumerate() {
+            let mut subfields = Vec::with_capacity(col_type.subtypes.len());
+            for (i, subtype_index) in col_type.subtypes.iter().enumerate() {
                 let (mut subfield, _) = read_field(
-                    &field_type.field_names[i],
+                    &col_type.field_names[i],
                     *subtype_index as usize,
                     types,
-                    column_index,
+                    depth + 1,
+                    i,
                     col_stats,
                 )?;
-                debug_assert!(subfield.len() == 1);
+                debug_assert_eq!(subfield.len(), 1);
                 subfields.push(subfield.pop().expect("Struct field type missed"));
             }
 
             let next_type = type_idx + subfields.len() + 1;
-            if column_index == 0 {
+            if depth == 0 {
                 // this is a top level struct which represent a schema itself, unwrap it
                 Ok((subfields, next_type))
             } else {
@@ -117,18 +127,19 @@ fn read_field<N: Into<String>>(
             }
         }
         proto::r#type::Kind::Union => {
-            has_children(field_type, &name)?;
+            has_children(col_type, &name)?;
 
-            let mut subfields = Vec::with_capacity(field_type.subtypes.len());
-            for (i, subtype_index) in field_type.subtypes.iter().enumerate() {
+            let mut subfields = Vec::with_capacity(col_type.subtypes.len());
+            for (i, subtype_index) in col_type.subtypes.iter().enumerate() {
                 let (mut subfield, _) = read_field(
-                    &field_type.field_names[i],
+                    &col_type.field_names[i],
                     *subtype_index as usize,
                     types,
+                    depth + 1,
                     column_index,
                     col_stats,
                 )?;
-                debug_assert!(subfield.len() == 1);
+                debug_assert_eq!(subfield.len(), 1);
                 subfields.push(subfield.pop().expect("Union field type missed"));
             }
             let next_type = type_idx + subfields.len() + 1;
@@ -137,7 +148,7 @@ fn read_field<N: Into<String>>(
                     name,
                     datatypes::DataType::Union(
                         subfields,
-                        (0..field_type.subtypes.len() as i8).into_iter().collect(),
+                        (0..col_type.subtypes.len() as i8).into_iter().collect(),
                         datatypes::UnionMode::Dense,
                     ),
                     stats.has_null(),
@@ -147,8 +158,8 @@ fn read_field<N: Into<String>>(
         }
         proto::r#type::Kind::Varchar | proto::r#type::Kind::Char => {
             let metadata = HashMap::from([(
-                "max_length".to_string(),
-                field_type.maximum_length().to_string(),
+                "maximum_length".to_string(),
+                col_type.maximum_length().to_string(),
             )]);
             Ok((
                 vec![
@@ -159,13 +170,13 @@ fn read_field<N: Into<String>>(
             ))
         }
         proto::r#type::Kind::Decimal => {
-            if field_type.precision() > u8::MAX as u32 || field_type.scale() > i8::MAX as u32 {
+            if col_type.precision() > u8::MAX as u32 || col_type.scale() > i8::MAX as u32 {
                 return Err(Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
                         "Unsupported decimal precision/scale: {}/{}",
-                        field_type.precision(),
-                        field_type.scale()
+                        col_type.precision(),
+                        col_type.scale()
                     ),
                 ));
             }
@@ -174,8 +185,8 @@ fn read_field<N: Into<String>>(
                 vec![datatypes::Field::new(
                     name,
                     datatypes::DataType::Decimal128(
-                        field_type.precision() as u8,
-                        field_type.scale() as i8,
+                        col_type.precision() as u8,
+                        col_type.scale() as i8,
                     ),
                     stats.has_null(),
                 )],
@@ -185,7 +196,7 @@ fn read_field<N: Into<String>>(
         _ => Ok((
             vec![datatypes::Field::new(
                 name,
-                map_to_basic_arrow_datatype(field_type.kind())?,
+                map_to_basic_arrow_datatype(col_type.kind())?,
                 stats.has_null(),
             )],
             type_idx + 1,

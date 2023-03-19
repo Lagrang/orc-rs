@@ -121,8 +121,8 @@ impl Matcher<FileTail> for FileTailMatcher {
                 eq(actual.header_size)
             ))
             .and(verify_that!(
-                self.expected.compression,
-                eq(actual.compression)
+                self.expected.postscript.compression(),
+                eq(actual.postscript.compression())
             ))
             .and(verify_that!(
                 self.expected.metadata,

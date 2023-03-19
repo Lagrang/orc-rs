@@ -9,9 +9,10 @@ use crate::compression::CompressionRegistry;
 use crate::proto;
 use crate::source::OrcSource;
 use crate::stripe::{StripeInfo, StripeReader};
-use crate::tail::{FileTail, FileVersion, TailReader};
+use crate::tail::{FileMetadataReader, FileTail, FileVersion};
 
 use bytes::Bytes;
+use prost::Message;
 
 #[derive(Default)]
 pub struct ReaderOptions {
@@ -43,15 +44,20 @@ pub trait OrcReader {
 
 struct OrcSourceReader {
     tail: FileTail,
+    stripe_stats: Option<Vec<proto::StripeStatistics>>,
     orc_file: Box<dyn OrcSource>,
 }
 
 impl OrcSourceReader {
     fn new(orc_file: Box<dyn OrcSource>, opts: ReaderOptions) -> Result<Self> {
-        let tail_reader = TailReader::new(orc_file.reader()?, opts.compression)?;
+        let mut tail_reader = FileMetadataReader::new(orc_file.reader()?, opts.compression)?;
 
+        let tail = tail_reader.read_tail()?;
+        let metadata =
+            tail_reader.read_metadata(&tail.postscript, tail.postscript.encoded_len())?;
         Ok(OrcSourceReader {
-            tail: tail_reader.read()?,
+            tail,
+            stripe_stats: metadata.map(|m| m.stripe_stats),
             orc_file,
         })
     }
@@ -96,6 +102,9 @@ impl OrcReader for OrcSourceReader {
 
         Ok(StripeReader::new(
             self.tail.stripes[stripe].clone(),
+            self.stripe_stats
+                .as_ref()
+                .map_or_else(|| Vec::with_capacity(0), |stats| stats.clone()),
             self.orc_file.reader()?,
         ))
     }

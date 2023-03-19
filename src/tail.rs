@@ -125,18 +125,13 @@ impl FileMetadataReader {
         }
 
         let metadata_size = postscript.metadata_length() as usize;
-
-        let mut new_buf = io_utils::UninitBytesMut::new(metadata_size);
         let tail_size = postscript.footer_length() + postscript_len as u64 + 1;
         let metadata_offset = self.file_reader.end_pos() - tail_size - metadata_size as u64;
-        let actual_len = self.file_reader.read_at(metadata_offset, &mut new_buf)?;
-        if actual_len != metadata_size {
-            return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Expected metadata size is {metadata_size}, but actual read size from file is {actual_len}"),
-                ));
-        }
-        let mut metadata_buffer = new_buf.freeze();
+        let mut metadata_buffer = self.file_reader.read_exact_at(
+            metadata_offset,
+            metadata_size,
+            "Invalid metadata size",
+        )?;
 
         Ok(Some(proto::Metadata::decode(&mut metadata_buffer)?))
     }
@@ -152,49 +147,35 @@ impl FileMetadataReader {
             // footer already read into a buffer
             read_buffer.slice(read_buffer.len() - declared_footer_len..)
         } else {
-            let mut new_buf = io_utils::UninitBytesMut::new(declared_footer_len);
             let file_size = self.file_reader.len();
             let tail_size = postscript.footer_length() + postscript_len + 1;
             let footer_pos = file_size - tail_size;
-            let actual_footer_len = self.file_reader.read_at(footer_pos, &mut new_buf)?;
-            if actual_footer_len != declared_footer_len {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Invalid file footer size: \
-                        expected length={declared_footer_len}, \
-                        actual footer size={actual_footer_len}, \
-                        postscript size={postscript_len}, \
-                        file size={file_size}.",
-                    ),
-                ));
-            }
-            new_buf.freeze()
+            self.file_reader.read_exact_at(
+                footer_pos,
+                declared_footer_len,
+                "Invalid file footer size",
+            )?
         };
 
         let decompressed_footer = if postscript.compression() != proto::CompressionKind::None {
             // decompress the footer
             let compression_codec = self.compression_registry.codec(postscript.compression())?;
-            let mut decompressed_footer = Vec::with_capacity(footer_buffer.len());
-            let mut footer_reader = compression::new_decompress_stream(
+            compression::decompress(
                 footer_buffer.reader(),
                 compression_codec,
                 postscript.compression_block_size(),
-            );
-            footer_reader
-                .read_to_end(&mut decompressed_footer)
-                .map_err(|err| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("ORC footer decompression failed: {err}"),
-                    )
-                })?;
-            decompressed_footer
+            )
+            .map_err(|err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("ORC footer decompression failed: {err}"),
+                )
+            })?
         } else {
-            footer_buffer.to_vec()
+            footer_buffer
         };
 
-        let footer = proto::Footer::decode(decompressed_footer.deref()).map_err(|err| {
+        let footer = proto::Footer::decode(decompressed_footer).map_err(|err| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Footer protobuf damaged: '{err}'"),

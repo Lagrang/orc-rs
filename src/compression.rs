@@ -13,6 +13,18 @@ pub(crate) fn new_decompress_stream<'codec, Input: Read + 'codec>(
     DecompressionStream::new(codec, input, compressed_block_size)
 }
 
+/// Decompress all bytes from the `input`.
+pub(crate) fn decompress<'codec, Input: Read + 'codec>(
+    input: Input,
+    codec: &'codec mut dyn BlockCodec,
+    compressed_block_size: u64,
+) -> std::io::Result<Bytes> {
+    let mut stream = DecompressionStream::new(codec, input, compressed_block_size);
+    let res_vec = Vec::new();
+    stream.read_to_end(&mut res_vec)?;
+    Ok(Bytes::from(res_vec))
+}
+
 /// Compression registry contains links to codecs for all supported compression formats.
 pub struct CompressionRegistry {
     snappy_codec: Box<dyn BlockCodec>,

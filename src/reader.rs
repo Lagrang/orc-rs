@@ -46,6 +46,7 @@ struct OrcSourceReader {
     tail: FileTail,
     stripe_stats: Option<Vec<proto::StripeStatistics>>,
     orc_file: Box<dyn OrcSource>,
+    compression: CompressionRegistry,
 }
 
 impl OrcSourceReader {
@@ -59,6 +60,7 @@ impl OrcSourceReader {
             tail,
             stripe_stats: metadata.map(|m| m.stripe_stats),
             orc_file,
+            compression: opts.compression,
         })
     }
 }
@@ -85,30 +87,6 @@ impl OrcReader for OrcSourceReader {
         self.tail.schema.clone()
     }
 
-    /// Returns stripe data reader.
-    ///
-    /// Index of stripe can be deduced from vector returned by [`OrcReader::stripes`].
-    fn read_stripe(&self, stripe: usize) -> Result<StripeReader> {
-        if stripe >= self.tail.stripes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Stripe index {} is out of bound ({} stripe(s) in the file)",
-                    stripe,
-                    self.tail.stripes.len(),
-                ),
-            ));
-        }
-
-        Ok(StripeReader::new(
-            self.tail.stripes[stripe].clone(),
-            self.stripe_stats
-                .as_ref()
-                .map_or_else(|| Vec::with_capacity(0), |stats| stats.clone()),
-            self.orc_file.reader()?,
-        ))
-    }
-
     /// ORC file format version.
     fn version(&self) -> FileVersion {
         self.tail.version
@@ -131,6 +109,29 @@ impl OrcReader for OrcSourceReader {
             debug_assert!(prev.is_none());
         }
         result
+    }
+
+    /// Returns stripe data reader.
+    ///
+    /// Index of stripe can be deduced from vector returned by [`OrcReader::stripes`].
+    fn read_stripe(&self, stripe: usize) -> Result<StripeReader> {
+        if stripe >= self.tail.stripes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Stripe index {} is out of bound ({} stripe(s) in the file)",
+                    stripe,
+                    self.tail.stripes.len(),
+                ),
+            ));
+        }
+
+        Ok(StripeReader::new(
+            self.tail.stripes[stripe].clone(),
+            &self.tail,
+            self.orc_file.reader()?,
+            &self.compression,
+        ))
     }
 }
 

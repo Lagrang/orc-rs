@@ -1,4 +1,4 @@
-use std::io::{Result, *};
+use std::io::{self, Result, *};
 use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -149,5 +149,24 @@ pub trait PositionalReader {
                 }
             }
         }
+    }
+
+    fn read_exact_at(
+        &mut self,
+        offset: u64,
+        bytes_to_read: usize,
+        err_msg_prefix: &str,
+    ) -> Result<Bytes> {
+        let buffer = UninitBytesMut::new(bytes_to_read);
+        let bytes_read = self.read_at(offset, &mut buffer)?;
+        if bytes_read != bytes_to_read {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{err_msg_prefix}: expected to read {bytes_read} bytes, but actually read {bytes_to_read} bytes",
+                ),
+            ));
+        }
+        Ok(buffer.freeze())
     }
 }

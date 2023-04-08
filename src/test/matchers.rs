@@ -1,7 +1,9 @@
+use std::borrow::Borrow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::Arc;
 
 use colored::*;
 use googletest::matcher::Matcher;
@@ -75,12 +77,12 @@ pub fn diff<L: Debug, R: Debug>(left: &L, right: &R) -> String {
 }
 
 pub struct ArrowSchemaMatcher {
-    expected: arrow::datatypes::Schema,
+    expected: Arc<arrow::datatypes::Schema>,
     diff: Cell<String>,
 }
 
-impl Matcher<arrow::datatypes::Schema> for ArrowSchemaMatcher {
-    fn matches(&self, actual: &arrow::datatypes::Schema) -> MatcherResult {
+impl Matcher<Arc<arrow::datatypes::Schema>> for ArrowSchemaMatcher {
+    fn matches(&self, actual: &Arc<arrow::datatypes::Schema>) -> MatcherResult {
         if &self.expected == actual {
             MatcherResult::Matches
         } else {
@@ -100,7 +102,7 @@ impl Matcher<arrow::datatypes::Schema> for ArrowSchemaMatcher {
     }
 }
 
-pub fn arrow_schema_eq(expected: &arrow::datatypes::Schema) -> ArrowSchemaMatcher {
+pub fn arrow_schema_eq(expected: Arc<arrow::datatypes::Schema>) -> ArrowSchemaMatcher {
     ArrowSchemaMatcher {
         expected: expected.clone(),
         diff: Cell::default(),
@@ -136,7 +138,7 @@ impl Matcher<FileTail> for FileTailMatcher {
             ))
             .and(verify_that!(
                 actual.schema,
-                arrow_schema_eq(&self.expected.schema)
+                arrow_schema_eq(self.expected.schema.clone())
             ));
         // .and(verify_that!(&self.expected.stripes, eq(&actual.stripes)))
         // .and(verify_that!(

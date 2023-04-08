@@ -4,7 +4,9 @@ use std::io::{Error, Result};
 
 use arrow::datatypes;
 
-use crate::proto;
+use crate::{proto, OrcError};
+
+const COLUMN_ID: &str = "column_id";
 
 pub fn read_schema(
     types: &Vec<proto::Type>,
@@ -30,7 +32,7 @@ fn read_field<N: Into<String>>(
     let stats = &col_stats[column_index];
     let name = name.into();
 
-    match col_type.kind() {
+    let mut fields = match col_type.kind() {
         proto::r#type::Kind::List => {
             check_children_count(col_type, 1, &name)?;
 
@@ -201,7 +203,32 @@ fn read_field<N: Into<String>>(
             )],
             type_idx + 1,
         )),
+    };
+
+    // If this is not a root of the schema, when append column ID
+    if let Ok((fds, _)) = &mut fields {
+        if fds.len() == 1 {
+            fds[0].set_metadata(HashMap::from([(
+                COLUMN_ID.to_string(),
+                type_idx.to_string(),
+            )]));
+        }
     }
+    fields
+}
+
+/// Extract index of column in ORC schema associated with this field.
+/// Each ORC column has associated index in ORC file schema. This method extracts
+/// this index from column metadata.
+///
+/// **Warn**: field must be created by [`read_schema`] method. Otherwise, it returns `Err`.
+pub fn get_column_id(field: &arrow::datatypes::Field) -> crate::Result<u32> {
+    field.metadata()[COLUMN_ID].parse().map_err(|_| {
+        OrcError::General(format!(
+            "Column index is not set for field {}",
+            field.to_string()
+        ))
+    })
 }
 
 fn map_to_basic_arrow_datatype(r#type: proto::r#type::Kind) -> Result<datatypes::DataType> {

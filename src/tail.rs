@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use bytes::Buf;
 use bytes::Bytes;
@@ -11,6 +12,7 @@ use crate::compression::CompressionRegistry;
 use crate::io_utils;
 use crate::proto;
 use crate::schema;
+use crate::OrcError;
 
 #[derive(Debug)]
 pub(crate) struct FileTail {
@@ -21,7 +23,7 @@ pub(crate) struct FileTail {
     pub row_count: u64,
     pub row_index_stride: u32,
     pub metadata: HashMap<String, Bytes>,
-    pub schema: arrow::datatypes::Schema,
+    pub schema: arrow::datatypes::SchemaRef,
     pub column_statistics: Vec<proto::ColumnStatistics>,
     pub stripes: Vec<proto::StripeInformation>,
 }
@@ -32,7 +34,7 @@ pub struct FileVersion(pub u32, pub u32);
 /// Struct which allows to read ORC file metadata: postscript, footer and metadata.
 pub struct FileMetadataReader {
     file_reader: Box<dyn io_utils::PositionalReader>,
-    compression_registry: CompressionRegistry,
+    compression_registry: Arc<CompressionRegistry>,
 }
 
 /// Try to read 16K from ORC file tail to get footer and postscript in one call.
@@ -41,16 +43,16 @@ const TAIL_BUFFER_SIZE: usize = 16 * 1024;
 
 impl FileMetadataReader {
     pub fn new(
-        mut file_reader: Box<dyn io_utils::PositionalReader>,
-        compression_registry: CompressionRegistry,
-    ) -> std::io::Result<Self> {
+        file_reader: Box<dyn io_utils::PositionalReader>,
+        compression_registry: Arc<CompressionRegistry>,
+    ) -> crate::Result<Self> {
         Ok(FileMetadataReader {
             file_reader,
             compression_registry,
         })
     }
 
-    pub(crate) fn read_tail(&mut self) -> std::io::Result<FileTail> {
+    pub(crate) fn read_tail(&mut self) -> crate::Result<FileTail> {
         let file_end_pos: u64 = self.file_reader.end_pos();
         let tail_start_pos = if file_end_pos > TAIL_BUFFER_SIZE as u64 {
             file_end_pos - TAIL_BUFFER_SIZE as u64
@@ -61,10 +63,7 @@ impl FileMetadataReader {
         let mut buffer = io_utils::UninitBytesMut::new(TAIL_BUFFER_SIZE);
         let bytes_read = self.file_reader.read_at(tail_start_pos, &mut buffer)?;
         if bytes_read < 4 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                format!("ORC file is too short, only {bytes_read} bytes"),
-            ));
+            return Err(OrcError::UnexpectedEof(bytes_read));
         }
 
         let mut read_buffer = buffer.freeze();
@@ -73,12 +72,7 @@ impl FileMetadataReader {
         let tail_size = postscript.footer_length() + postscript_len + 1;
         let file_size = self.file_reader.len();
         if tail_size >= file_size {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Invalid ORC file: tail size({file_size} byte(s)) is greater than file size({tail_size} byte(s))",
-                ),
-            ));
+            return Err(OrcError::InvalidTail(tail_size, file_size));
         }
 
         let mut version = FileVersion(0, 0);
@@ -89,10 +83,7 @@ impl FileMetadataReader {
 
         let footer = self.read_footer(&postscript, postscript_len, &read_buffer)?;
         if footer.encryption.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Encrypted files are not supported",
-            ));
+            return Err(OrcError::UnsupportedFeature("Encrypted files".to_string()));
         }
 
         let schema = schema::read_schema(&footer.types, &footer.statistics)?;
@@ -109,7 +100,7 @@ impl FileMetadataReader {
                 .iter()
                 .map(|kv| (kv.name().to_owned(), kv.value().to_vec().into()))
                 .collect(),
-            schema,
+            schema: Arc::new(schema),
             column_statistics: footer.statistics,
             stripes: footer.stripes,
         })
@@ -119,7 +110,7 @@ impl FileMetadataReader {
         &mut self,
         postscript: &proto::PostScript,
         postscript_len: usize,
-    ) -> std::io::Result<Option<proto::Metadata>> {
+    ) -> crate::Result<Option<proto::Metadata>> {
         if postscript.metadata_length() == 0 {
             return Ok(None);
         }
@@ -141,7 +132,7 @@ impl FileMetadataReader {
         postscript: &proto::PostScript,
         postscript_len: u64,
         read_buffer: &Bytes,
-    ) -> std::io::Result<proto::Footer> {
+    ) -> crate::Result<proto::Footer> {
         let declared_footer_len = postscript.footer_length() as usize;
         let footer_buffer = if declared_footer_len <= read_buffer.len() {
             // footer already read into a buffer
@@ -232,6 +223,7 @@ impl FileMetadataReader {
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;
+    use std::sync::Arc;
 
     use arrow::datatypes::{self};
     use googletest::{verify_that, Result};
@@ -268,10 +260,10 @@ mod tests {
                 row_count: 10000,
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("int1", datatypes::DataType::Int32, false),
                     datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
-                ]),
+                ])),
             },
         );
 
@@ -287,7 +279,7 @@ mod tests {
                 row_count: 70000,
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("_col0", datatypes::DataType::Int8, false),
                     datatypes::Field::new("_col1", datatypes::DataType::Int16, false),
                     datatypes::Field::new("_col2", datatypes::DataType::Int32, false),
@@ -295,7 +287,7 @@ mod tests {
                     datatypes::Field::new("_col4", datatypes::DataType::Float32, false),
                     datatypes::Field::new("_col5", datatypes::DataType::Float64, false),
                     datatypes::Field::new("_col6", datatypes::DataType::Boolean, false),
-                ]),
+                ])),
             },
         );
 
@@ -313,11 +305,11 @@ mod tests {
                 row_count: 10000,
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("x", datatypes::DataType::Int64, false),
                     datatypes::Field::new("y", datatypes::DataType::Int32, false),
                     datatypes::Field::new("z", datatypes::DataType::Int64, false),
-                ]),
+                ])),
             },
         );
 
@@ -335,11 +327,11 @@ mod tests {
                 row_count: 10000,
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("x", datatypes::DataType::Int64, false),
                     datatypes::Field::new("y", datatypes::DataType::Int32, false),
                     datatypes::Field::new("z", datatypes::DataType::Int64, false),
-                ]),
+                ])),
             },
         );
 
@@ -357,7 +349,7 @@ mod tests {
                 row_count: 1920800,
                 row_index_stride: 10000,
                 version: FileVersion(0, 11),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
                     datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
@@ -367,7 +359,7 @@ mod tests {
                     datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
-                ]),
+                ])),
             },
         );
 
@@ -383,7 +375,7 @@ mod tests {
                 row_count: 1920800,
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
                     datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
@@ -393,7 +385,7 @@ mod tests {
                     datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
-                ]),
+                ])),
             },
         );
 
@@ -409,7 +401,7 @@ mod tests {
                 row_count: 1920800,
                 row_index_stride: 10000,
                 version: FileVersion(0, 11),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
                     datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
@@ -419,7 +411,7 @@ mod tests {
                     datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
                     datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
-                ]),
+                ])),
             },
         );
 
@@ -441,7 +433,7 @@ mod tests {
                 row_count: 7500,
                 row_index_stride: 10000,
                 version: FileVersion(0, 11),
-                schema: datatypes::Schema::new(vec![
+                schema: Arc::new(datatypes::Schema::new(vec![
                     datatypes::Field::new("boolean1", datatypes::DataType::Boolean, false),
                     datatypes::Field::new("byte1", datatypes::DataType::Int8, false),
                     datatypes::Field::new("short1", datatypes::DataType::Int16, false),
@@ -526,7 +518,7 @@ mod tests {
                         false,
                     ),
                     datatypes::Field::new("decimal1", datatypes::DataType::Decimal128(0, 0), false),
-                ]),
+                ])),
             },
         );
         footers

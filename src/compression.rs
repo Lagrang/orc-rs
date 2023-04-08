@@ -5,6 +5,7 @@ use flate2::Status;
 use std::cmp;
 use std::io::{Error, Read, Result};
 
+/// Create the stream which will decompress the data from compressed data blocks.
 pub(crate) fn new_decompress_stream<'codec, Input: Read + 'codec>(
     input: Input,
     codec: &'codec mut dyn BlockCodec,
@@ -13,19 +14,20 @@ pub(crate) fn new_decompress_stream<'codec, Input: Read + 'codec>(
     DecompressionStream::new(codec, input, compressed_block_size)
 }
 
-/// Decompress all bytes from the `input`.
+/// Decompress data from the input stream into in-memory buffer.
 pub(crate) fn decompress<'codec, Input: Read + 'codec>(
     input: Input,
-    codec: &'codec mut dyn BlockCodec,
+    codec: &'codec dyn BlockCodec,
     compressed_block_size: u64,
 ) -> std::io::Result<Bytes> {
     let mut stream = DecompressionStream::new(codec, input, compressed_block_size);
-    let res_vec = Vec::new();
+    let mut res_vec = Vec::new();
     stream.read_to_end(&mut res_vec)?;
     Ok(Bytes::from(res_vec))
 }
 
-/// Compression registry contains links to codecs for all supported compression formats.
+/// Compression registry contains references to codecs for all supported compression formats.
+/// Can be used to provide a custom block codec implementation.
 pub struct CompressionRegistry {
     snappy_codec: Box<dyn BlockCodec>,
     zstd_codec: Box<dyn BlockCodec>,
@@ -73,15 +75,12 @@ impl CompressionRegistry {
     /// Find the codec for passed compression type.
     ///
     /// Returns an error if compression is not supported.
-    pub fn codec(
-        &mut self,
-        compression_type: proto::CompressionKind,
-    ) -> Result<&mut dyn BlockCodec> {
+    pub fn codec(&self, compression_type: proto::CompressionKind) -> Result<&dyn BlockCodec> {
         match compression_type {
-            proto::CompressionKind::Snappy => Ok(self.snappy_codec.as_mut()),
-            proto::CompressionKind::Zstd => Ok(self.zstd_codec.as_mut()),
-            proto::CompressionKind::Lz4 => Ok(self.lz4_codec.as_mut()),
-            proto::CompressionKind::Zlib => Ok(self.zlib_codec.as_mut()),
+            proto::CompressionKind::Snappy => Ok(self.snappy_codec.as_ref()),
+            proto::CompressionKind::Zstd => Ok(self.zstd_codec.as_ref()),
+            proto::CompressionKind::Lz4 => Ok(self.lz4_codec.as_ref()),
+            proto::CompressionKind::Zlib => Ok(self.zlib_codec.as_ref()),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("Compression type '{compression_type:?}' is not supported"),
@@ -91,14 +90,14 @@ impl CompressionRegistry {
 }
 
 pub trait BlockCodec: Send + Sync {
-    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes>;
+    fn decompress(&self, input: &[u8], max_output_len: usize) -> Result<Bytes>;
 }
 
 #[derive(Debug, Default)]
 pub struct ZstdCodec;
 
 impl BlockCodec for ZstdCodec {
-    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
+    fn decompress(&self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
         Ok(zstd::bulk::decompress(input, max_output_len)?.into())
     }
 }
@@ -107,7 +106,7 @@ impl BlockCodec for ZstdCodec {
 pub struct SnappyCodec;
 
 impl BlockCodec for SnappyCodec {
-    fn decompress(&mut self, input: &[u8], _max_output_len: usize) -> Result<Bytes> {
+    fn decompress(&self, input: &[u8], _max_output_len: usize) -> Result<Bytes> {
         let out_size = snap::raw::decompress_len(input)?;
         let mut output = UninitBytesMut::new(out_size);
         output.write_from(|write_into| snap::raw::Decoder::new().decompress(input, write_into))?;
@@ -120,7 +119,7 @@ impl BlockCodec for SnappyCodec {
 pub struct Lz4Codec;
 
 impl BlockCodec for Lz4Codec {
-    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
+    fn decompress(&self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
         let mut output = UninitBytesMut::new(max_output_len);
         output.write_from(|write_into| {
             lz4_flex::block::decompress_into(input, write_into).map_err(|err| {
@@ -151,7 +150,7 @@ impl ZlibCodec {
 }
 
 impl BlockCodec for ZlibCodec {
-    fn decompress(&mut self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
+    fn decompress(&self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
         self.decoder.reset(false);
         let mut output = UninitBytesMut::new(max_output_len);
         output.write_from(
@@ -168,11 +167,21 @@ impl BlockCodec for ZlibCodec {
     }
 }
 
+/// Decompression stream allows to decompress compressed blocks of ORC file.
+/// This stream reads and decompresses data contained in the input stream.
+///
+/// Each compressed block has following format:
+/// - header(3 bytes). Format described in [`DecompressionStream::decode_block_header`].
+/// - data inside block
+///
+/// Various compression types supported though [`BlockCodec`].
 struct DecompressionStream<'codec, Input: Read> {
+    // Input data stream with data blocks(compressed or not).
     compressed_stream: Input,
     /// End of stream indicator
-    eos: bool,
-    codec: &'codec mut dyn BlockCodec,
+    completed: bool,
+    codec: &'codec dyn BlockCodec,
+    // Max size of compressed block in ORC file. Used to preallocate decompression buffers.
     block_size: usize,
     /// Buffer is used for all read operations from the underlying stream.
     /// Allows to track how many bytes already decompressed.
@@ -183,15 +192,15 @@ struct DecompressionStream<'codec, Input: Read> {
     decompressed_chunk: Bytes,
 }
 
-const HEADER_SIZE: usize = 4;
+const HEADER_SIZE: usize = 3;
 
 impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
-    fn new(codec: &'codec mut dyn BlockCodec, compressed: Input, block_size: u64) -> Self {
+    fn new(codec: &'codec dyn BlockCodec, compressed: Input, block_size: u64) -> Self {
         let block_size = block_size as usize;
         let current_block = UninitBytesMut::new(block_size);
         Self {
             compressed_stream: compressed,
-            eos: false,
+            completed: false,
             codec,
             block_size,
             current_block,
@@ -207,7 +216,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
             "Decompressed chunk is not consumed yet and we are trying to decompress the next!"
         );
 
-        if self.eos {
+        if self.completed {
             return Ok(false);
         }
 
@@ -237,9 +246,8 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
             return Ok(false);
         }
 
-        // We didn't decode header from existing block buffer,
-        // try again with the new one(expanded using more data
-        // from underlying stream).
+        // We didn't decode header from existing block buffer(not enough bytes in buffer to read header),
+        // try again with the new one (extended using more data from underlying stream).
         if header.is_none() {
             header = self.decode_block_header();
         }
@@ -293,6 +301,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
         Ok(true)
     }
 
+    /// Read next N bytes from underlying input stream.
     fn read_from_stream(&mut self, read_bytes: usize) -> Result<usize> {
         self.current_block.ensure_capacity(read_bytes);
 
@@ -301,7 +310,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
             .write_from(|write_into| self.compressed_stream.read(write_into))?;
 
         // end of stream reached
-        self.eos = bytes_read == 0;
+        self.completed = bytes_read == 0;
 
         Ok(bytes_read)
     }
@@ -310,13 +319,15 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
     /// - block size
     /// - flag which is indicate that this block is compressed or not.
     ///
+    /// Header format(24 bit size): [23 bits: length of data block, 1 bit: is data compressed ot not]
+    ///
     /// Returns `None` if not enough data in current block to read the header.
     fn decode_block_header(&mut self) -> Option<(usize, bool)> {
         if self.current_block.remaining() < 3 {
             return None;
         }
 
-        let mut header = [0; HEADER_SIZE];
+        let mut header = [0; HEADER_SIZE + 1];
         // Least significant bit of first byte is indicate that data is compressed.
         // Next 7 bit + 2 bytes represent the block size.
         self.current_block.copy_to_slice(&mut header[..3]);

@@ -1,22 +1,24 @@
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
 use std::{
     format,
-    io::{Read, Result, Seek},
+    io::{Read, Seek},
 };
 
 use crate::compression::CompressionRegistry;
-use crate::proto;
 use crate::source::OrcSource;
 use crate::stripe::{StripeInfo, StripeReader};
 use crate::tail::{FileMetadataReader, FileTail, FileVersion};
+use crate::Result;
+use crate::{proto, OrcError};
 
 use bytes::Bytes;
 use prost::Message;
 
 #[derive(Default)]
 pub struct ReaderOptions {
-    pub compression: CompressionRegistry,
+    pub compression: Arc<CompressionRegistry>,
     //TODO: add custom allocator support, pub allocator: &'a dyn std::alloc::Allocator,
 }
 
@@ -34,7 +36,7 @@ where
 pub trait OrcReader {
     fn version(&self) -> FileVersion;
     fn num_rows(&self) -> u64;
-    fn schema(&self) -> arrow::datatypes::Schema;
+    fn schema(&self) -> arrow::datatypes::SchemaRef;
     fn metadata(&self) -> HashMap<String, Bytes>;
     fn column_statistics(&self) -> HashMap<String, proto::ColumnStatistics>;
     fn stripes(&self) -> Vec<StripeInfo>;
@@ -46,12 +48,17 @@ struct OrcSourceReader {
     tail: FileTail,
     stripe_stats: Option<Vec<proto::StripeStatistics>>,
     orc_file: Box<dyn OrcSource>,
-    compression: CompressionRegistry,
+    compression: Arc<CompressionRegistry>,
 }
 
 impl OrcSourceReader {
     fn new(orc_file: Box<dyn OrcSource>, opts: ReaderOptions) -> Result<Self> {
-        let mut tail_reader = FileMetadataReader::new(orc_file.reader()?, opts.compression)?;
+        let mut tail_reader = FileMetadataReader::new(
+            orc_file
+                .reader()
+                .map_err(|e| OrcError::IoError(e.kind(), e.to_string()))?,
+            opts.compression.clone(),
+        )?;
 
         let tail = tail_reader.read_tail()?;
         let metadata =
@@ -83,7 +90,7 @@ impl OrcReader for OrcSourceReader {
     }
 
     /// Returns the ORC file schema.
-    fn schema(&self) -> arrow::datatypes::Schema {
+    fn schema(&self) -> arrow::datatypes::SchemaRef {
         self.tail.schema.clone()
     }
 
@@ -116,20 +123,16 @@ impl OrcReader for OrcSourceReader {
     /// Index of stripe can be deduced from vector returned by [`OrcReader::stripes`].
     fn read_stripe(&self, stripe: usize) -> Result<StripeReader> {
         if stripe >= self.tail.stripes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Stripe index {} is out of bound ({} stripe(s) in the file)",
-                    stripe,
-                    self.tail.stripes.len(),
-                ),
+            return Err(OrcError::InvalidStripeIndex(
+                stripe,
+                self.tail.stripes.len(),
             ));
         }
 
         Ok(StripeReader::new(
             self.tail.stripes[stripe].clone(),
             &self.tail,
-            self.orc_file.reader()?,
+            self.orc_file.as_ref(),
             &self.compression,
         ))
     }

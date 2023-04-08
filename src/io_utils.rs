@@ -1,4 +1,4 @@
-use std::io::{self, Result, *};
+use std::io::*;
 use std::ops::{Deref, DerefMut};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -38,7 +38,7 @@ impl UninitBytesMut {
         self.buffer.split_to(at)
     }
 
-    pub fn write_from<F, E>(&mut self, read_fn: F) -> Result<usize>
+    pub fn write_from<F, E>(&mut self, read_fn: F) -> std::io::Result<usize>
     where
         F: FnOnce(&mut [u8]) -> std::result::Result<usize, E>,
         E: std::error::Error,
@@ -109,14 +109,14 @@ unsafe impl BufMut for UninitBytesMut {
 pub trait PositionalReader {
     fn start_pos(&self) -> u64;
     fn end_pos(&self) -> u64;
-    fn seek_from_start(&mut self, pos: u64) -> Result<u64>;
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
+    fn seek_from_start(&mut self, pos: u64) -> std::io::Result<u64>;
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
 
     fn len(&self) -> u64 {
         self.end_pos() - self.start_pos()
     }
 
-    fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> Result<usize> {
+    fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         self.seek_from_start(pos)?;
 
         let mut byte_read = 0;
@@ -144,7 +144,7 @@ pub trait PositionalReader {
                 }
                 Err(e) => {
                     if e.kind() != ErrorKind::Interrupted {
-                        return Err(e);
+                        return Err(e.into());
                     }
                 }
             }
@@ -156,7 +156,7 @@ pub trait PositionalReader {
         offset: u64,
         bytes_to_read: usize,
         err_msg_prefix: &str,
-    ) -> Result<Bytes> {
+    ) -> std::io::Result<Bytes> {
         let buffer = UninitBytesMut::new(bytes_to_read);
         let bytes_read = self.read_at(offset, &mut buffer)?;
         if bytes_read != bytes_to_read {

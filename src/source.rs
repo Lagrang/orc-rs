@@ -3,7 +3,10 @@ use std::io::{Read, Seek, SeekFrom};
 
 use crate::io_utils::PositionalReader;
 
+/// ORC file source abstraction.
+/// Each source represent ORC file located on some 'source', i.e. file, memory buffer, etc.
 pub trait OrcSource {
+    /// Creates a new reader for ORC file.
     fn reader(&self) -> std::io::Result<Box<dyn PositionalReader>>;
 }
 
@@ -12,8 +15,9 @@ pub struct FileSource {
     end_pos: Option<u64>,
 }
 
+/// ORC file represented as file on some filesystem.
 impl FileSource {
-    pub fn new(path: &std::path::Path) -> std::io::Result<Box<Self>> {
+    pub fn new(path: &std::path::Path) -> crate::Result<Box<Self>> {
         Ok(Box::new(Self {
             file: std::fs::File::open(path)?,
             end_pos: None,
@@ -57,10 +61,15 @@ impl FileReader {
         let start_pos = file.stream_position()?;
         let end_pos = end_pos.map_or_else(|| file.seek(SeekFrom::End(0)), Ok)?;
         if end_pos <= start_pos {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("File start position({start_pos}) is greater than end position({end_pos})",),
-            ));
+            return Err(
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "File start position({start_pos}) is greater than end position({end_pos})",
+                    ),
+                )
+                .into(),
+            );
         }
 
         Ok(Self {

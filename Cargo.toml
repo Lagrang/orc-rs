@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 bytes = "1.2.1"
 prost = "0.11.2"
-arrow = "33.0.0"
+arrow = "36.0.0"
 snap = "1.1.0"
 zstd = "0.12.1+zstd.1.5.2"
 lz4_flex = { version = "0.10.0", default-features = false, features = [
@@ -14,6 +14,7 @@ lz4_flex = { version = "0.10.0", default-features = false, features = [
     "frame",
 ] }
 flate2 = "1.0.25"
+thiserror = "1.0.40"
 
 [dev-dependencies]
 googletest = "0.4.1"

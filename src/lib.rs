@@ -2,6 +2,7 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/orc.proto.rs"));
 }
 
+mod encoding;
 mod io_utils;
 mod schema;
 mod stripe;
@@ -36,8 +37,10 @@ pub enum OrcError {
     General(String),
     #[error("Malformed stream {1:?} in stripe {0:?}")]
     MalformedStream(proto::StripeInformation, proto::Stream),
-    #[error("Malformed column metadata for column {0}. Footer {1:?}.")]
+    #[error("Malformed column metadata for column {0}. Footer {1:?}")]
     MalformedColumnStreams(u32, proto::StripeFooter),
+    #[error("Expected RLE block")]
+    MalformedRleBlock,
 }
 
 impl From<std::io::Error> for OrcError {

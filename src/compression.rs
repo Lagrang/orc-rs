@@ -179,7 +179,7 @@ struct DecompressionStream<'codec, Input: Read> {
     // Input data stream with data blocks(compressed or not).
     compressed_stream: Input,
     /// End of stream indicator
-    completed: bool,
+    end_of_stream: bool,
     codec: &'codec dyn BlockCodec,
     // Max size of compressed block in ORC file. Used to preallocate decompression buffers.
     block_size: usize,
@@ -200,7 +200,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
         let current_block = UninitBytesMut::new(block_size);
         Self {
             compressed_stream: compressed,
-            completed: false,
+            end_of_stream: false,
             codec,
             block_size,
             current_block,
@@ -216,7 +216,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
             "Decompressed chunk is not consumed yet and we are trying to decompress the next!"
         );
 
-        if self.completed {
+        if self.end_of_stream {
             return Ok(false);
         }
 
@@ -310,7 +310,7 @@ impl<'codec, Input: Read> DecompressionStream<'codec, Input> {
             .write_from(|write_into| self.compressed_stream.read(write_into))?;
 
         // end of stream reached
-        self.completed = bytes_read == 0;
+        self.end_of_stream = bytes_read == 0;
 
         Ok(bytes_read)
     }

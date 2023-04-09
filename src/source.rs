@@ -89,11 +89,15 @@ impl PositionalReader for FileReader {
         self.end_pos
     }
 
-    fn seek_from_start(&mut self, pos: u64) -> std::io::Result<u64> {
+    fn current_pos(&self) -> std::io::Result<u64> {
+        self.file.stream_position()
+    }
+
+    fn seek(&mut self, pos: u64) -> std::io::Result<u64> {
         self.file.seek(SeekFrom::Start(self.start_pos + pos))
     }
 
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read_to_slice(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.file.read(buf)
     }
 }

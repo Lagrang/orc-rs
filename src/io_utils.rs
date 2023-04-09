@@ -109,16 +109,15 @@ unsafe impl BufMut for UninitBytesMut {
 pub trait PositionalReader {
     fn start_pos(&self) -> u64;
     fn end_pos(&self) -> u64;
-    fn seek_from_start(&mut self, pos: u64) -> std::io::Result<u64>;
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+    fn current_pos(&self) -> std::io::Result<u64>;
+    fn seek(&mut self, pos: u64) -> std::io::Result<u64>;
+    fn read_to_slice(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
 
     fn len(&self) -> u64 {
         self.end_pos() - self.start_pos()
     }
 
-    fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
-        self.seek_from_start(pos)?;
-
+    fn read(&mut self, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         let mut byte_read = 0;
         loop {
             let slice = unsafe {
@@ -127,7 +126,7 @@ pub trait PositionalReader {
                     buffer.chunk_mut().len(),
                 )
             };
-            match self.read(slice) {
+            match self.read_to_slice(slice) {
                 Ok(read) => {
                     if read == 0 {
                         // end of file stream reached
@@ -149,6 +148,11 @@ pub trait PositionalReader {
                 }
             }
         }
+    }
+
+    fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
+        self.seek(pos)?;
+        self.read(buffer)
     }
 
     fn read_exact_at(

@@ -39,7 +39,7 @@ pub enum OrcError {
     MalformedStream(proto::StripeInformation, proto::Stream),
     #[error("Malformed column metadata for column {0}. Footer {1:?}")]
     MalformedColumnStreams(u32, proto::StripeFooter),
-    #[error("Expected RLE block")]
+    #[error("Malformed RLE block")]
     MalformedRleBlock,
 }
 

@@ -1,7 +1,7 @@
 use std::cmp;
 use std::sync::Arc;
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use crate::io_utils::PositionalReader;
 
@@ -28,7 +28,7 @@ struct RunState {
     // Index of last element in 'plain' sequence of values
     length: usize,
     // Index of next value in 'plain' sequence to return
-    next_element: usize,
+    consumed: usize,
     /// Indicates that current block is not RLE encoded, but contains plain values.
     is_plain: bool,
 }
@@ -37,7 +37,7 @@ impl RunState {
     fn empty() -> Self {
         Self {
             length: 0,
-            next_element: 0,
+            consumed: 0,
             is_plain: false,
         }
     }
@@ -45,52 +45,72 @@ impl RunState {
     fn from_header(header: i8) -> Self {
         let len = if header > 0 {
             //Run length at least 3 values and this min.length is not coded in 'length' field of header.
-            (header + 3) as usize
+            header as usize + 3
         } else {
-            header.abs() as usize
+            header.unsigned_abs() as usize
         };
         // Negative length means that next run doesn't contains equal values.
         Self {
             length: len,
-            next_element: 0,
+            consumed: 0,
             is_plain: header < 0,
         }
     }
 
+    #[inline]
     fn remaining(&self) -> usize {
-        self.length - self.next_element
+        self.length - self.consumed
     }
 
-    fn next(&mut self) -> bool {
-        self.next_element += 1;
-        self.next_element <= self.length
+    #[inline]
+    fn advance(&mut self, cnt: usize) {
+        debug_assert!(self.remaining() >= cnt);
+        self.consumed += cnt;
     }
 
     #[inline]
     fn has_values(&self) -> bool {
-        self.next_element < self.length
+        self.consumed < self.length
     }
 }
 
+const BUFFER_SIZE: usize = 4 * 1024;
+
 impl RleDecoder for ByteRleDecoder {
     fn read(&mut self, batch_size: usize) -> crate::Result<arrow::array::ArrayRef> {
-        let builder = arrow::array::UInt8Builder::with_capacity(batch_size);
+        let mut builder = arrow::array::UInt8Builder::with_capacity(batch_size);
         let mut remaining_values = batch_size;
         while remaining_values > 0 {
-            if !self.current_run.next() && !self.read_next_block()? {
+            // Current RLE run completed or buffer with values exhausted.
+            if (!self.current_run.has_values() || self.buffer.is_empty())
+                && !self.read_next_block()?
+            {
                 // No more data to decode
                 break;
             }
 
-            if self.buffer.remaining() > 0 {
-                let count = cmp::min(self.current_run.remaining(), self.buffer.remaining());
+            let count = if self.current_run.is_plain {
+                // Copy values(sequence of different values) from buffer
+                let count = cmp::min(
+                    cmp::min(self.current_run.remaining(), remaining_values),
+                    self.buffer.remaining(),
+                );
                 builder.append_slice(&self.buffer[..count]);
                 self.buffer.advance(count);
-                remaining_values -= count;
+                count
             } else {
-                // RLE run is not completed, but no buffered data remains => read next chunk
-                let res = self.read_next_block()?;
-                debug_assert!(res);
+                let count = cmp::min(self.current_run.remaining(), remaining_values);
+                let mut values = BytesMut::with_capacity(count);
+                values.put_bytes(self.buffer[0], count);
+                builder.append_slice(&values);
+                count
+            };
+
+            remaining_values -= count;
+            self.current_run.advance(count);
+            if !self.current_run.has_values() && !self.current_run.is_plain {
+                // RLE run with repeated values is completed, skip byte with run value.
+                self.buffer.advance(1);
             }
         }
         Ok(Arc::new(builder.finish()))
@@ -99,10 +119,7 @@ impl RleDecoder for ByteRleDecoder {
 
 impl ByteRleDecoder {
     fn new(file_reader: Box<dyn PositionalReader>, buffer_size: usize) -> Self {
-        let cap = cmp::max(
-            buffer_size,
-            4 * 1024, /* this value must be >=128 to get RLE run in one read operation */
-        );
+        let cap = cmp::max(buffer_size, 1);
         Self {
             file_reader,
             buffer: BytesMut::with_capacity(cap),
@@ -111,28 +128,70 @@ impl ByteRleDecoder {
     }
 
     fn read_next_block(&mut self) -> crate::Result<bool> {
-        if self.current_run.has_values() {
-            // Current run has more values, but current buffer exhausted. Read more data from data stream.
-            if self.buffer.is_empty() {
-                let bytes_read = self.file_reader.read(&mut self.buffer)?;
-                if bytes_read == 0 {
+        if self.buffer.is_empty() {
+            let bytes_read = PositionalReader::read(self.file_reader.as_mut(), &mut self.buffer)?;
+            if bytes_read == 0 {
+                if self.current_run.has_values() {
                     return Err(crate::OrcError::MalformedRleBlock);
-                }
-            }
-        } else {
-            // Current run is completed, read header of next RLE run.
-            if self.buffer.is_empty() {
-                let bytes_read = self.file_reader.read(&mut self.buffer)?;
-                if bytes_read == 0 {
+                } else {
                     return Ok(false);
                 }
             }
+        }
 
+        // Start new RLE run
+        if !self.current_run.has_values() {
             // First byte of block contains the RLE header.
             let header = i8::from_le_bytes([self.buffer[0]; 1]);
             self.buffer.advance(1);
             self.current_run = RunState::from_header(header);
         }
+
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::array::AsArray;
+    use arrow::datatypes::UInt8Type;
+    use bytes::{BufMut, BytesMut};
+    use googletest::matchers::eq;
+    use googletest::verify_that;
+
+    use crate::source::MemoryReader;
+
+    use super::{ByteRleDecoder, RleDecoder, BUFFER_SIZE};
+
+    #[test]
+    fn byte_rle_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        source_data.put_bytes(1, 5);
+        source_data.put_u8(2);
+        source_data.put_u8(3);
+        source_data.put_u8(4);
+        // Test max sized for repeated values.
+        source_data.put_bytes(3, 127);
+        // Test repeated values which should be split to 2 RLE runs.
+        source_data.put_bytes(3, 20);
+        // Test max size for sequence of different values.
+        for i in 0..128 {
+            source_data.put_u8(i);
+        }
+        source_data.put_bytes(u8::MAX, 20);
+
+        let reader = Box::new(MemoryReader::from_mut(source_data.clone()));
+        let mut rle = ByteRleDecoder::new(reader, BUFFER_SIZE);
+        let mut actual = Vec::new();
+        loop {
+            let array = rle.read(3)?;
+            if array.is_empty() {
+                break;
+            }
+            actual.extend_from_slice(array.as_primitive::<UInt8Type>().values());
+        }
+
+        verify_that!(actual, eq(source_data))?;
+        Ok(())
     }
 }

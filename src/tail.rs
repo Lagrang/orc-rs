@@ -229,6 +229,7 @@ mod tests {
     use googletest::{verify_that, Result};
 
     use super::{FileMetadataReader, FileTail, FileVersion};
+    use crate::schema;
     use crate::source::{FileSource, OrcSource};
     use crate::test::matchers::same_tail;
 
@@ -239,7 +240,7 @@ mod tests {
             let mut tail_reader =
                 FileMetadataReader::new(file.reader()?, Default::default()).unwrap();
             let tail = tail_reader.read_tail().unwrap();
-            verify_that!(tail, same_tail(footer))?
+            verify_that!(tail, same_tail(footer))?;
         }
         Ok(())
     }
@@ -261,8 +262,14 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("int1", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("int1", datatypes::DataType::Int32, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
+                        2,
+                    ),
                 ])),
             },
         );
@@ -280,13 +287,34 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("_col0", datatypes::DataType::Int8, false),
-                    datatypes::Field::new("_col1", datatypes::DataType::Int16, false),
-                    datatypes::Field::new("_col2", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col3", datatypes::DataType::Int64, false),
-                    datatypes::Field::new("_col4", datatypes::DataType::Float32, false),
-                    datatypes::Field::new("_col5", datatypes::DataType::Float64, false),
-                    datatypes::Field::new("_col6", datatypes::DataType::Boolean, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col0", datatypes::DataType::Int8, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col1", datatypes::DataType::Int16, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col2", datatypes::DataType::Int32, false),
+                        3,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col3", datatypes::DataType::Int64, false),
+                        4,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col4", datatypes::DataType::Float32, false),
+                        5,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col5", datatypes::DataType::Float64, false),
+                        6,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col6", datatypes::DataType::Boolean, false),
+                        7,
+                    ),
                 ])),
             },
         );
@@ -306,9 +334,18 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("x", datatypes::DataType::Int64, false),
-                    datatypes::Field::new("y", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("z", datatypes::DataType::Int64, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("x", datatypes::DataType::Int64, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("y", datatypes::DataType::Int32, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("z", datatypes::DataType::Int64, false),
+                        3,
+                    ),
                 ])),
             },
         );
@@ -328,9 +365,18 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("x", datatypes::DataType::Int64, false),
-                    datatypes::Field::new("y", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("z", datatypes::DataType::Int64, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("x", datatypes::DataType::Int64, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("y", datatypes::DataType::Int32, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("z", datatypes::DataType::Int64, false),
+                        3,
+                    ),
                 ])),
             },
         );
@@ -350,15 +396,42 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 11),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
+                        3,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
+                        4,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
+                        5,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
+                        6,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
+                        7,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
+                        8,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                        9,
+                    ),
                 ])),
             },
         );
@@ -376,15 +449,42 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 12),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
+                        3,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
+                        4,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
+                        5,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
+                        6,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
+                        7,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
+                        8,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                        9,
+                    ),
                 ])),
             },
         );
@@ -402,15 +502,42 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 11),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col0", datatypes::DataType::Int32, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col1", datatypes::DataType::Utf8, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col2", datatypes::DataType::Utf8, false),
+                        3,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col3", datatypes::DataType::Utf8, false),
+                        4,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col4", datatypes::DataType::Int32, false),
+                        5,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col5", datatypes::DataType::Utf8, false),
+                        6,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col6", datatypes::DataType::Int32, false),
+                        7,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col7", datatypes::DataType::Int32, false),
+                        8,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("_col8", datatypes::DataType::Int32, false),
+                        9,
+                    ),
                 ])),
             },
         );
@@ -434,90 +561,181 @@ mod tests {
                 row_index_stride: 10000,
                 version: FileVersion(0, 11),
                 schema: Arc::new(datatypes::Schema::new(vec![
-                    datatypes::Field::new("boolean1", datatypes::DataType::Boolean, false),
-                    datatypes::Field::new("byte1", datatypes::DataType::Int8, false),
-                    datatypes::Field::new("short1", datatypes::DataType::Int16, false),
-                    datatypes::Field::new("int1", datatypes::DataType::Int32, false),
-                    datatypes::Field::new("long1", datatypes::DataType::Int64, false),
-                    datatypes::Field::new("float1", datatypes::DataType::Float32, false),
-                    datatypes::Field::new("double1", datatypes::DataType::Float64, false),
-                    datatypes::Field::new("bytes1", datatypes::DataType::Binary, false),
-                    datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
-                    datatypes::Field::new(
-                        "middle",
-                        datatypes::DataType::Struct(vec![datatypes::Field::new(
+                    schema::set_column_id(
+                        datatypes::Field::new("boolean1", datatypes::DataType::Boolean, false),
+                        1,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("byte1", datatypes::DataType::Int8, false),
+                        2,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("short1", datatypes::DataType::Int16, false),
+                        3,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("int1", datatypes::DataType::Int32, false),
+                        4,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("long1", datatypes::DataType::Int64, false),
+                        5,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("float1", datatypes::DataType::Float32, false),
+                        6,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("double1", datatypes::DataType::Float64, false),
+                        7,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("bytes1", datatypes::DataType::Binary, false),
+                        8,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
+                        9,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new(
+                            "middle",
+                            datatypes::DataType::Struct(vec![schema::set_column_id(
+                                datatypes::Field::new(
+                                    "list",
+                                    datatypes::DataType::List(Box::new(schema::set_column_id(
+                                        datatypes::Field::new(
+                                            "inner",
+                                            datatypes::DataType::Struct(vec![
+                                                schema::set_column_id(
+                                                    datatypes::Field::new(
+                                                        "int1",
+                                                        datatypes::DataType::Int32,
+                                                        false,
+                                                    ),
+                                                    13,
+                                                ),
+                                                schema::set_column_id(
+                                                    datatypes::Field::new(
+                                                        "string1",
+                                                        datatypes::DataType::Utf8,
+                                                        false,
+                                                    ),
+                                                    14,
+                                                ),
+                                            ]),
+                                            false,
+                                        ),
+                                        12,
+                                    ))),
+                                    false,
+                                ),
+                                11,
+                            )]),
+                            false,
+                        ),
+                        10,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new(
                             "list",
-                            datatypes::DataType::List(Box::new(datatypes::Field::new(
-                                "inner",
-                                datatypes::DataType::Struct(vec![
-                                    datatypes::Field::new(
-                                        "int1",
-                                        datatypes::DataType::Int32,
-                                        false,
-                                    ),
-                                    datatypes::Field::new(
-                                        "string1",
-                                        datatypes::DataType::Utf8,
-                                        false,
-                                    ),
-                                ]),
-                                false,
-                            ))),
-                            false,
-                        )]),
-                        false,
-                    ),
-                    datatypes::Field::new(
-                        "list",
-                        datatypes::DataType::List(Box::new(datatypes::Field::new(
-                            "inner",
-                            datatypes::DataType::Struct(vec![
-                                datatypes::Field::new("int1", datatypes::DataType::Int32, false),
-                                datatypes::Field::new("string1", datatypes::DataType::Utf8, false),
-                            ]),
-                            false,
-                        ))),
-                        false,
-                    ),
-                    datatypes::Field::new(
-                        "map",
-                        datatypes::DataType::Map(
-                            Box::new(datatypes::Field::new(
-                                "entries",
-                                datatypes::DataType::Struct(vec![
-                                    datatypes::Field::new("key", datatypes::DataType::Utf8, false),
-                                    datatypes::Field::new(
-                                        "value",
-                                        datatypes::DataType::Struct(vec![
+                            datatypes::DataType::List(Box::new(schema::set_column_id(
+                                datatypes::Field::new(
+                                    "inner",
+                                    datatypes::DataType::Struct(vec![
+                                        schema::set_column_id(
                                             datatypes::Field::new(
                                                 "int1",
                                                 datatypes::DataType::Int32,
                                                 false,
                                             ),
+                                            17,
+                                        ),
+                                        schema::set_column_id(
                                             datatypes::Field::new(
                                                 "string1",
                                                 datatypes::DataType::Utf8,
                                                 false,
                                             ),
-                                        ]),
-                                        false,
-                                    ),
-                                ]),
-                                false,
-                            )),
+                                            18,
+                                        ),
+                                    ]),
+                                    false,
+                                ),
+                                16,
+                            ))),
                             false,
                         ),
-                        false,
+                        15,
                     ),
-                    datatypes::Field::new(
-                        "ts",
-                        datatypes::DataType::Timestamp(
-                            datatypes::TimeUnit::Nanosecond,
-                            Some("UTC".into()),
+                    schema::set_column_id(
+                        datatypes::Field::new(
+                            "map",
+                            datatypes::DataType::Map(
+                                Box::new(datatypes::Field::new(
+                                    "entries",
+                                    datatypes::DataType::Struct(vec![
+                                        schema::set_column_id(
+                                            datatypes::Field::new(
+                                                "key",
+                                                datatypes::DataType::Utf8,
+                                                false,
+                                            ),
+                                            20,
+                                        ),
+                                        schema::set_column_id(
+                                            datatypes::Field::new(
+                                                "value",
+                                                datatypes::DataType::Struct(vec![
+                                                    schema::set_column_id(
+                                                        datatypes::Field::new(
+                                                            "int1",
+                                                            datatypes::DataType::Int32,
+                                                            false,
+                                                        ),
+                                                        22,
+                                                    ),
+                                                    schema::set_column_id(
+                                                        datatypes::Field::new(
+                                                            "string1",
+                                                            datatypes::DataType::Utf8,
+                                                            false,
+                                                        ),
+                                                        23,
+                                                    ),
+                                                ]),
+                                                false,
+                                            ),
+                                            21,
+                                        ),
+                                    ]),
+                                    false,
+                                )),
+                                false,
+                            ),
+                            false,
                         ),
-                        false,
+                        19,
                     ),
-                    datatypes::Field::new("decimal1", datatypes::DataType::Decimal128(0, 0), false),
+                    schema::set_column_id(
+                        datatypes::Field::new(
+                            "ts",
+                            datatypes::DataType::Timestamp(
+                                datatypes::TimeUnit::Nanosecond,
+                                Some("UTC".into()),
+                            ),
+                            false,
+                        ),
+                        24,
+                    ),
+                    schema::set_column_id(
+                        datatypes::Field::new(
+                            "decimal1",
+                            datatypes::DataType::Decimal128(0, 0),
+                            false,
+                        ),
+                        25,
+                    ),
                 ])),
             },
         );

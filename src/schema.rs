@@ -8,7 +8,7 @@ use crate::{proto, OrcError};
 
 const COLUMN_ID: &str = "column_id";
 
-pub fn read_schema(
+pub(crate) fn read_schema(
     types: &Vec<proto::Type>,
     col_stats: &Vec<proto::ColumnStatistics>,
 ) -> Result<datatypes::Schema> {
@@ -32,11 +32,11 @@ fn read_field<N: Into<String>>(
     let stats = &col_stats[column_index];
     let name = name.into();
 
-    let mut fields = match col_type.kind() {
+    match col_type.kind() {
         proto::r#type::Kind::List => {
             check_children_count(col_type, 1, &name)?;
 
-            let (mut inner_type, _) = read_field(
+            let (mut inner_type, next_type) = read_field(
                 "inner",
                 type_idx + 1,
                 types,
@@ -51,14 +51,18 @@ fn read_field<N: Into<String>>(
                         inner_type.pop().expect("Inner type of list missed"),
                     )),
                     stats.has_null(),
-                )],
-                type_idx + 2,
+                )
+                .with_metadata(HashMap::from([(
+                    COLUMN_ID.to_string(),
+                    type_idx.to_string(),
+                )]))],
+                next_type,
             ))
         }
         proto::r#type::Kind::Map => {
             check_children_count(col_type, 2, &name)?;
 
-            let (mut key_type, _) = read_field(
+            let (mut key_type, next_type) = read_field(
                 "key",
                 type_idx + 1,
                 types,
@@ -67,9 +71,9 @@ fn read_field<N: Into<String>>(
                 col_stats,
             )?;
             debug_assert_eq!(key_type.len(), 1);
-            let (mut value_type, _) = read_field(
+            let (mut value_type, next_type) = read_field(
                 "value",
-                type_idx + 2,
+                next_type,
                 types,
                 depth + 1,
                 column_index,
@@ -92,16 +96,21 @@ fn read_field<N: Into<String>>(
                         stats.has_null(),
                     ),
                     stats.has_null(),
-                )],
-                type_idx + 3,
+                )
+                .with_metadata(HashMap::from([(
+                    COLUMN_ID.to_string(),
+                    type_idx.to_string(),
+                )]))],
+                next_type,
             ))
         }
         proto::r#type::Kind::Struct => {
             has_children(col_type, &name)?;
 
             let mut subfields = Vec::with_capacity(col_type.subtypes.len());
+            let mut next_type_id = 0;
             for (i, subtype_index) in col_type.subtypes.iter().enumerate() {
-                let (mut subfield, _) = read_field(
+                let (mut subfield, next_type) = read_field(
                     &col_type.field_names[i],
                     *subtype_index as usize,
                     types,
@@ -109,22 +118,26 @@ fn read_field<N: Into<String>>(
                     i,
                     col_stats,
                 )?;
+                next_type_id = next_type;
                 debug_assert_eq!(subfield.len(), 1);
                 subfields.push(subfield.pop().expect("Struct field type missed"));
             }
 
-            let next_type = type_idx + subfields.len() + 1;
             if depth == 0 {
                 // this is a top level struct which represent a schema itself, unwrap it
-                Ok((subfields, next_type))
+                Ok((subfields, next_type_id))
             } else {
                 Ok((
                     vec![datatypes::Field::new(
                         name,
                         datatypes::DataType::Struct(subfields),
                         stats.has_null(),
-                    )],
-                    next_type,
+                    )
+                    .with_metadata(HashMap::from([(
+                        COLUMN_ID.to_string(),
+                        type_idx.to_string(),
+                    )]))],
+                    next_type_id,
                 ))
             }
         }
@@ -132,8 +145,9 @@ fn read_field<N: Into<String>>(
             has_children(col_type, &name)?;
 
             let mut subfields = Vec::with_capacity(col_type.subtypes.len());
+            let mut next_type_id = type_idx + subfields.len() + 1;
             for (i, subtype_index) in col_type.subtypes.iter().enumerate() {
-                let (mut subfield, _) = read_field(
+                let (mut subfield, next_type) = read_field(
                     &col_type.field_names[i],
                     *subtype_index as usize,
                     types,
@@ -141,28 +155,35 @@ fn read_field<N: Into<String>>(
                     column_index,
                     col_stats,
                 )?;
+                next_type_id = next_type;
                 debug_assert_eq!(subfield.len(), 1);
                 subfields.push(subfield.pop().expect("Union field type missed"));
             }
-            let next_type = type_idx + subfields.len() + 1;
             Ok((
                 vec![datatypes::Field::new(
                     name,
                     datatypes::DataType::Union(
                         subfields,
-                        (0..col_type.subtypes.len() as i8).into_iter().collect(),
+                        (0..col_type.subtypes.len() as i8).collect(),
                         datatypes::UnionMode::Dense,
                     ),
                     stats.has_null(),
-                )],
-                next_type,
+                )
+                .with_metadata(HashMap::from([(
+                    COLUMN_ID.to_string(),
+                    type_idx.to_string(),
+                )]))],
+                next_type_id,
             ))
         }
         proto::r#type::Kind::Varchar | proto::r#type::Kind::Char => {
-            let metadata = HashMap::from([(
-                "maximum_length".to_string(),
-                col_type.maximum_length().to_string(),
-            )]);
+            let metadata = HashMap::from([
+                (
+                    "maximum_length".to_string(),
+                    col_type.maximum_length().to_string(),
+                ),
+                (COLUMN_ID.to_string(), type_idx.to_string()),
+            ]);
             Ok((
                 vec![
                     datatypes::Field::new(name, datatypes::DataType::Utf8, stats.has_null())
@@ -191,7 +212,11 @@ fn read_field<N: Into<String>>(
                         col_type.scale() as i8,
                     ),
                     stats.has_null(),
-                )],
+                )
+                .with_metadata(HashMap::from([(
+                    COLUMN_ID.to_string(),
+                    type_idx.to_string(),
+                )]))],
                 type_idx + 1,
             ))
         }
@@ -200,21 +225,14 @@ fn read_field<N: Into<String>>(
                 name,
                 map_to_basic_arrow_datatype(col_type.kind())?,
                 stats.has_null(),
-            )],
-            type_idx + 1,
-        )),
-    };
-
-    // If this is not a root of the schema, when append column ID
-    if let Ok((fds, _)) = &mut fields {
-        if fds.len() == 1 {
-            fds[0].set_metadata(HashMap::from([(
+            )
+            .with_metadata(HashMap::from([(
                 COLUMN_ID.to_string(),
                 type_idx.to_string(),
-            )]));
-        }
+            )]))],
+            type_idx + 1,
+        )),
     }
-    fields
 }
 
 /// Extract index of column in ORC schema associated with this field.
@@ -222,13 +240,14 @@ fn read_field<N: Into<String>>(
 /// this index from column metadata.
 ///
 /// **Warn**: field must be created by [`read_schema`] method. Otherwise, it returns `Err`.
-pub fn get_column_id(field: &arrow::datatypes::Field) -> crate::Result<u32> {
-    field.metadata()[COLUMN_ID].parse().map_err(|_| {
-        OrcError::General(format!(
-            "Column index is not set for field {}",
-            field.to_string()
-        ))
-    })
+pub(crate) fn get_column_id(field: &arrow::datatypes::Field) -> crate::Result<u32> {
+    field.metadata()[COLUMN_ID]
+        .parse()
+        .map_err(|_| OrcError::General(format!("Column index is not set for field {}", field)))
+}
+
+pub(crate) fn set_column_id(field: arrow::datatypes::Field, id: u32) -> arrow::datatypes::Field {
+    field.with_metadata(HashMap::from([(COLUMN_ID.to_string(), id.to_string())]))
 }
 
 fn map_to_basic_arrow_datatype(r#type: proto::r#type::Kind) -> Result<datatypes::DataType> {

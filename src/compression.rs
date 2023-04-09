@@ -48,7 +48,7 @@ impl CompressionRegistry {
             snappy_codec: Box::new(SnappyCodec {}),
             zstd_codec: Box::new(ZstdCodec {}),
             lz4_codec: Box::new(Lz4Codec {}),
-            zlib_codec: Box::new(ZlibCodec::new()),
+            zlib_codec: Box::new(ZlibCodec {}),
         }
     }
 
@@ -130,37 +130,21 @@ impl BlockCodec for Lz4Codec {
     }
 }
 
-#[derive(Debug)]
-pub struct ZlibCodec {
-    decoder: flate2::Decompress,
-}
-
-impl Default for ZlibCodec {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ZlibCodec {
-    pub fn new() -> Self {
-        Self {
-            decoder: flate2::Decompress::new(false),
-        }
-    }
-}
+#[derive(Debug, Default)]
+pub struct ZlibCodec {}
 
 impl BlockCodec for ZlibCodec {
     fn decompress(&self, input: &[u8], max_output_len: usize) -> Result<Bytes> {
-        self.decoder.reset(false);
+        let mut decoder = flate2::Decompress::new(false);
+        decoder.reset(false);
         let mut output = UninitBytesMut::new(max_output_len);
         output.write_from(
             |write_into| -> std::result::Result<usize, flate2::DecompressError> {
-                let bytes_before = self.decoder.total_out();
+                let bytes_before = decoder.total_out();
                 let status =
-                    self.decoder
-                        .decompress(input, write_into, flate2::FlushDecompress::Finish)?;
+                    decoder.decompress(input, write_into, flate2::FlushDecompress::Finish)?;
                 debug_assert_eq!(status, Status::StreamEnd);
-                Ok((self.decoder.total_out() - bytes_before) as usize)
+                Ok((decoder.total_out() - bytes_before) as usize)
             },
         )?;
         Ok(output.freeze())

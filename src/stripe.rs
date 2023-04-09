@@ -5,11 +5,9 @@ use crate::column_reader;
 use crate::compression;
 use crate::compression::decompress;
 use crate::compression::CompressionRegistry;
-use crate::io_utils;
 use crate::io_utils::PositionalReader;
 use crate::proto;
 use crate::proto::stream;
-use crate::schema::get_column_id;
 use crate::source::OrcSource;
 use crate::tail::FileTail;
 
@@ -34,7 +32,7 @@ pub struct StripeReader<'a> {
 }
 
 impl<'a> StripeReader<'a> {
-    pub fn new(
+    pub(crate) fn new(
         stripe: proto::StripeInformation,
         tail: &'a FileTail,
         orc_file: &'a dyn OrcSource,
@@ -76,11 +74,11 @@ impl<'a> StripeReader<'a> {
 
         let footer = proto::StripeFooter::decode(footer_buf)?;
         // validate streams
-        let stripeEndOffset = self.stripe_meta.offset()
+        let stripe_end_offset = self.stripe_meta.offset()
             + self.stripe_meta.index_length()
             + self.stripe_meta.data_length();
         for stream in &footer.streams {
-            if self.stripe_meta.offset() + stream.length() > stripeEndOffset {
+            if self.stripe_meta.offset() + stream.length() > stripe_end_offset {
                 return Err(crate::OrcError::MalformedStream(
                     self.stripe_meta.clone(),
                     stream.clone(),
@@ -93,11 +91,11 @@ impl<'a> StripeReader<'a> {
         // footer.writer_timezone.map(|tz| );
 
         for column in self.out_schema.fields() {
-            self.col_readers.push(column_reader::create_reader(
-                self.orc_file.reader()?,
-                &footer,
-                column,
-            )?);
+            // self.col_readers.push(column_reader::create_reader(
+            //     self.orc_file.reader()?,
+            //     &footer,
+            //     column,
+            // )?);
         }
 
         Ok(())
@@ -127,8 +125,8 @@ impl<'a> StripeReader<'a> {
                         self.tail.postscript.compression_block_size(),
                     )?;
 
-                    let colId = stream.column() as usize;
-                    index_set.add_row_index(colId, proto::RowIndex::decode(index_buffer)?);
+                    let col_id = stream.column() as usize;
+                    index_set.add_row_index(col_id, proto::RowIndex::decode(index_buffer)?);
                 }
                 stream::Kind::BloomFilterUtf8 => {
                     let buffer = file_reader.read_exact_at(
@@ -143,9 +141,9 @@ impl<'a> StripeReader<'a> {
                         self.tail.postscript.compression_block_size(),
                     )?;
 
-                    let colId = stream.column() as usize;
+                    let col_id = stream.column() as usize;
                     let bloom_filter = proto::BloomFilterIndex::decode(index_buffer)?;
-                    index_set.add_bloom_index(colId, bloom_filter, &footer.columns[colId]);
+                    index_set.add_bloom_index(col_id, bloom_filter, &footer.columns[col_id]);
                 }
                 _ => {}
             }

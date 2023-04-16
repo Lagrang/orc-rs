@@ -1,13 +1,9 @@
 use std::collections::HashMap;
-use std::io;
+use std::io::{Read, Seek};
 use std::sync::Arc;
-use std::{
-    format,
-    io::{Read, Seek},
-};
 
-use crate::compression::CompressionRegistry;
-use crate::source::OrcSource;
+use crate::compression::{self, CompressionRegistry};
+use crate::source::OrcFile;
 use crate::stripe::{StripeInfo, StripeReader};
 use crate::tail::{FileMetadataReader, FileTail, FileVersion};
 use crate::Result;
@@ -18,12 +14,12 @@ use prost::Message;
 
 #[derive(Default)]
 pub struct ReaderOptions {
-    pub compression: Arc<CompressionRegistry>,
+    pub compression_codecs: CompressionRegistry,
     //TODO: add custom allocator support, pub allocator: &'a dyn std::alloc::Allocator,
 }
 
 /// Creates new ORC file reader.
-pub fn new_reader<T>(orc_file: Box<dyn OrcSource>, opts: ReaderOptions) -> Result<impl OrcReader>
+pub fn new_reader<T>(orc_file: Box<dyn OrcFile>, opts: ReaderOptions) -> Result<impl OrcReader>
 where
     T: Read + Seek,
 {
@@ -47,27 +43,27 @@ pub trait OrcReader {
 struct OrcSourceReader {
     tail: FileTail,
     stripe_stats: Option<Vec<proto::StripeStatistics>>,
-    orc_file: Box<dyn OrcSource>,
-    compression: Arc<CompressionRegistry>,
+    orc_file: Box<dyn OrcFile>,
+    compression: compression::Compression,
 }
 
 impl OrcSourceReader {
-    fn new(orc_file: Box<dyn OrcSource>, opts: ReaderOptions) -> Result<Self> {
+    fn new(orc_file: Box<dyn OrcFile>, opts: ReaderOptions) -> Result<Self> {
         let mut tail_reader = FileMetadataReader::new(
             orc_file
-                .reader()
+                .positional_reader()
                 .map_err(|e| OrcError::IoError(e.kind(), e.to_string()))?,
-            opts.compression.clone(),
         )?;
 
-        let tail = tail_reader.read_tail()?;
+        let (tail, compression) = tail_reader.read_tail(opts.compression_codecs)?;
         let metadata =
             tail_reader.read_metadata(&tail.postscript, tail.postscript.encoded_len())?;
+
         Ok(OrcSourceReader {
             tail,
             stripe_stats: metadata.map(|m| m.stripe_stats),
             orc_file,
-            compression: opts.compression,
+            compression,
         })
     }
 }
@@ -131,7 +127,7 @@ impl OrcReader for OrcSourceReader {
 
         Ok(StripeReader::new(
             self.tail.stripes[stripe].clone(),
-            &self.tail,
+            self.tail.schema.clone(),
             self.orc_file.as_ref(),
             &self.compression,
         ))

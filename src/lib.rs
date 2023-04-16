@@ -41,6 +41,8 @@ pub enum OrcError {
     MalformedColumnStreams(u32, proto::StripeFooter),
     #[error("Malformed RLE block")]
     MalformedRleBlock,
+    #[error("Column {1:?} doesn't contain a stream with kind {0:?}")]
+    InvalidStreamKind(proto::stream::Kind, u32),
 }
 
 impl From<std::io::Error> for OrcError {

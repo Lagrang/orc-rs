@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, BufMut, BytesMut};
 
-use crate::io_utils::PositionalReader;
+use crate::io_utils::PositionalRead;
 
 pub trait RleDecoder {
     fn read(&mut self, batch_size: usize) -> crate::Result<arrow::array::ArrayRef>;
@@ -17,7 +17,7 @@ pub trait RleDecoder {
 /// of the minimal run (3) and the control byte for literal lists is the negative length of the list.
 /// For example, a hundred 0’s is encoded as [0x61, 0x00] and the sequence 0x44, 0x45 would be encoded as [0xfe, 0x44, 0x45].
 pub struct ByteRleDecoder {
-    file_reader: Box<dyn PositionalReader>,
+    file_reader: Box<dyn PositionalRead>,
     // Block of data read from file but not processed yet
     buffer: BytesMut,
     // State of current run
@@ -118,7 +118,7 @@ impl RleDecoder for ByteRleDecoder {
 }
 
 impl ByteRleDecoder {
-    fn new(file_reader: Box<dyn PositionalReader>, buffer_size: usize) -> Self {
+    fn new(file_reader: Box<dyn PositionalRead>, buffer_size: usize) -> Self {
         let cap = cmp::max(buffer_size, 1);
         Self {
             file_reader,
@@ -129,7 +129,7 @@ impl ByteRleDecoder {
 
     fn read_next_block(&mut self) -> crate::Result<bool> {
         if self.buffer.is_empty() {
-            let bytes_read = PositionalReader::read(self.file_reader.as_mut(), &mut self.buffer)?;
+            let bytes_read = PositionalRead::read(self.file_reader.as_mut(), &mut self.buffer)?;
             if bytes_read == 0 {
                 if self.current_run.has_values() {
                     return Err(crate::OrcError::MalformedRleBlock);

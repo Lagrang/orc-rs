@@ -1,15 +1,11 @@
-use bytes::Buf;
 use prost::Message;
 
 use crate::column_reader;
 use crate::compression;
-use crate::compression::decompress;
-use crate::compression::CompressionRegistry;
-use crate::io_utils::PositionalReader;
+use crate::io_utils::PositionalRead;
 use crate::proto;
 use crate::proto::stream;
-use crate::source::OrcSource;
-use crate::tail::FileTail;
+use crate::source::OrcFile;
 
 use self::index::StripeIndexSet;
 
@@ -20,38 +16,36 @@ pub struct StripeInfo {
 }
 
 pub struct StripeReader<'a> {
-    tail: &'a FileTail,
+    orc_file: &'a dyn OrcFile,
+    compression: &'a compression::Compression,
     stripe_meta: proto::StripeInformation,
-    orc_file: &'a dyn OrcSource,
-    is_initialized: bool,
-    compression: &'a CompressionRegistry,
     indexes: Option<index::StripeIndexSet>,
+    file_schema: arrow::datatypes::SchemaRef,
     // Schema for record batch returned by this reader. Used to filter out unnecessary columns.
     out_schema: arrow::datatypes::SchemaRef,
-    col_readers: Vec<Box<dyn column_reader::ColumnReader>>,
+    col_readers: Vec<Box<dyn column_reader::ColumnReader + 'a>>,
 }
 
 impl<'a> StripeReader<'a> {
     pub(crate) fn new(
         stripe: proto::StripeInformation,
-        tail: &'a FileTail,
-        orc_file: &'a dyn OrcSource,
-        compression: &'a CompressionRegistry,
+        file_schema: arrow::datatypes::SchemaRef,
+        orc_file: &'a dyn OrcFile,
+        reader_factory: &'a compression::Compression,
     ) -> Self {
         StripeReader {
-            stripe_meta: stripe,
-            tail,
             orc_file,
-            is_initialized: false,
-            compression,
+            compression: reader_factory,
+            stripe_meta: stripe,
+            file_schema: file_schema.clone(),
             indexes: None,
-            out_schema: tail.schema.clone(),
-            col_readers: Vec::with_capacity(tail.schema.fields().len()),
+            out_schema: file_schema.clone(),
+            col_readers: Vec::with_capacity(file_schema.fields().len()),
         }
     }
 
     pub fn read(&mut self) -> crate::Result<arrow::record_batch::RecordBatch> {
-        if !self.is_initialized {
+        if self.col_readers.is_empty() {
             self.init()?;
         }
 
@@ -61,7 +55,7 @@ impl<'a> StripeReader<'a> {
     }
 
     pub fn init(&mut self) -> crate::Result<()> {
-        let mut file_reader = self.orc_file.reader()?;
+        let mut file_reader = self.orc_file.positional_reader()?;
         // read the stripe footer
         let footer_offset = self.stripe_meta.offset()
             + self.stripe_meta.index_length()
@@ -86,16 +80,17 @@ impl<'a> StripeReader<'a> {
             }
         }
 
-        let codec = self.compression.codec(self.tail.postscript.compression())?;
-        self.indexes = Some(self.read_index(file_reader.as_mut(), &footer, codec)?);
+        self.indexes = Some(self.read_index(file_reader.as_mut(), &footer)?);
         // footer.writer_timezone.map(|tz| );
 
         for column in self.out_schema.fields() {
-            // self.col_readers.push(column_reader::create_reader(
-            //     self.orc_file.reader()?,
-            //     &footer,
-            //     column,
-            // )?);
+            self.col_readers.push(column_reader::create_reader(
+                column,
+                self.orc_file,
+                &footer,
+                &self.stripe_meta,
+                self.compression,
+            )?);
         }
 
         Ok(())
@@ -103,11 +98,10 @@ impl<'a> StripeReader<'a> {
 
     fn read_index(
         &self,
-        file_reader: &mut dyn PositionalReader,
+        file_reader: &mut dyn PositionalRead,
         footer: &proto::StripeFooter,
-        codec: &dyn compression::BlockCodec,
     ) -> std::io::Result<StripeIndexSet> {
-        let mut index_set = index::StripeIndexSet::new(self.tail.schema.fields.len());
+        let mut index_set = index::StripeIndexSet::new(self.file_schema.fields.len());
         // Read file offset where streams are starting
         let mut offset = self.stripe_meta.offset();
         for stream in &footer.streams {
@@ -119,12 +113,7 @@ impl<'a> StripeReader<'a> {
                         "Stripe index stream",
                     )?;
 
-                    let index_buffer = decompress(
-                        buffer.reader(),
-                        codec,
-                        self.tail.postscript.compression_block_size(),
-                    )?;
-
+                    let index_buffer = self.compression.decompress_buffer(buffer)?;
                     let col_id = stream.column() as usize;
                     index_set.add_row_index(col_id, proto::RowIndex::decode(index_buffer)?);
                 }
@@ -135,12 +124,7 @@ impl<'a> StripeReader<'a> {
                         "Stripe index stream",
                     )?;
 
-                    let index_buffer = decompress(
-                        buffer.reader(),
-                        codec,
-                        self.tail.postscript.compression_block_size(),
-                    )?;
-
+                    let index_buffer = self.compression.decompress_buffer(buffer)?;
                     let col_id = stream.column() as usize;
                     let bloom_filter = proto::BloomFilterIndex::decode(index_buffer)?;
                     index_set.add_bloom_index(col_id, bloom_filter, &footer.columns[col_id]);

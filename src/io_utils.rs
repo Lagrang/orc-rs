@@ -1,22 +1,19 @@
+use std::borrow::{Borrow, BorrowMut};
 use std::io::*;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, RangeBounds};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-pub struct UninitBytesMut {
+pub struct WriteBuffer {
     buffer: BytesMut,
 }
 
-impl UninitBytesMut {
+impl WriteBuffer {
     /// Creates mutable byte buffer with specified capacity.
     pub fn new(capacity: usize) -> Self {
-        UninitBytesMut {
+        WriteBuffer {
             buffer: BytesMut::with_capacity(capacity),
         }
-    }
-
-    pub fn freeze(self) -> Bytes {
-        self.buffer.freeze()
     }
 
     /// Reserve enough bytes in the buffer to accommodate write of `capacity` bytes.
@@ -32,10 +29,6 @@ impl UninitBytesMut {
         let mut new_buf = BytesMut::with_capacity(new_cap);
         new_buf.extend_from_slice(&self.buffer);
         self.buffer = new_buf;
-    }
-
-    pub fn split_to(&mut self, at: usize) -> BytesMut {
-        self.buffer.split_to(at)
     }
 
     pub fn write_from<F, E>(&mut self, read_fn: F) -> std::io::Result<usize>
@@ -62,7 +55,43 @@ impl UninitBytesMut {
     }
 }
 
-impl DerefMut for UninitBytesMut {
+impl From<BytesMut> for WriteBuffer {
+    fn from(value: BytesMut) -> Self {
+        Self { buffer: value }
+    }
+}
+
+impl From<WriteBuffer> for BytesMut {
+    fn from(value: WriteBuffer) -> Self {
+        value.buffer
+    }
+}
+
+impl Borrow<BytesMut> for WriteBuffer {
+    fn borrow(&self) -> &BytesMut {
+        &self.buffer
+    }
+}
+
+impl BorrowMut<BytesMut> for WriteBuffer {
+    fn borrow_mut(&mut self) -> &mut BytesMut {
+        &mut self.buffer
+    }
+}
+
+impl AsRef<BytesMut> for WriteBuffer {
+    fn as_ref(&self) -> &BytesMut {
+        &self.buffer
+    }
+}
+
+impl AsMut<BytesMut> for WriteBuffer {
+    fn as_mut(&mut self) -> &mut BytesMut {
+        &mut self.buffer
+    }
+}
+
+impl DerefMut for WriteBuffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             std::slice::from_raw_parts_mut(self.chunk_mut().as_mut_ptr(), self.chunk_mut().len())
@@ -70,7 +99,7 @@ impl DerefMut for UninitBytesMut {
     }
 }
 
-impl Deref for UninitBytesMut {
+impl Deref for WriteBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -78,7 +107,7 @@ impl Deref for UninitBytesMut {
     }
 }
 
-impl Buf for UninitBytesMut {
+impl Buf for WriteBuffer {
     fn remaining(&self) -> usize {
         self.buffer.remaining()
     }
@@ -92,7 +121,7 @@ impl Buf for UninitBytesMut {
     }
 }
 
-unsafe impl BufMut for UninitBytesMut {
+unsafe impl BufMut for WriteBuffer {
     fn remaining_mut(&self) -> usize {
         self.buffer.remaining_mut()
     }
@@ -106,14 +135,18 @@ unsafe impl BufMut for UninitBytesMut {
     }
 }
 
-pub trait PositionalReader: Read {
-    fn start_pos(&self) -> u64;
-    fn end_pos(&self) -> u64;
+pub trait SeekableRead: Read {
     fn seek(&mut self, pos: u64) -> std::io::Result<u64>;
+}
 
-    fn len(&self) -> u64 {
-        self.end_pos() - self.start_pos() + 1
+impl<T: SeekableRead + ?Sized> SeekableRead for Box<T> {
+    fn seek(&mut self, pos: u64) -> std::io::Result<u64> {
+        self.as_mut().seek(pos)
     }
+}
+
+pub trait PositionalRead: SeekableRead {
+    fn len(&self) -> u64;
 
     fn read(&mut self, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         let mut byte_read = 0;
@@ -150,7 +183,7 @@ pub trait PositionalReader: Read {
 
     fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         self.seek(pos)?;
-        PositionalReader::read(self, buffer)
+        PositionalRead::read(self, buffer)
     }
 
     fn read_exact_at(
@@ -159,7 +192,7 @@ pub trait PositionalReader: Read {
         bytes_to_read: usize,
         err_msg_prefix: &str,
     ) -> std::io::Result<Bytes> {
-        let mut buffer = UninitBytesMut::new(bytes_to_read);
+        let mut buffer = WriteBuffer::new(bytes_to_read);
         let bytes_read = self.read_at(offset, &mut buffer)?;
         if bytes_read != bytes_to_read {
             return Err(std::io::Error::new(
@@ -169,6 +202,54 @@ pub trait PositionalReader: Read {
                 ),
             ));
         }
+        let buffer: BytesMut = buffer.into();
         Ok(buffer.freeze())
+    }
+}
+
+/// Reader which wraps a base reader and allows to read the data only in a passed byte range.
+///
+/// For instance, base reader can read bytes in range (0..1000), i.e. reader can read 1000 bytes at max.
+/// Range reader will allow to narrow this range to some subset: (0..15), (40..=877), etc.
+pub(crate) struct RangeRead<T> {
+    reader: T,
+    limit: u64,
+    read_bytes: usize,
+}
+
+impl<T: SeekableRead> RangeRead<T> {
+    pub fn new(mut base_reader: T, offset_range: impl RangeBounds<u64>) -> std::io::Result<Self> {
+        let start_pos = match offset_range.start_bound() {
+            std::ops::Bound::Unbounded => base_reader.borrow_mut().seek(0)?,
+            std::ops::Bound::Excluded(pos) => base_reader.borrow_mut().seek(*pos + 1)?,
+            std::ops::Bound::Included(pos) => base_reader.borrow_mut().seek(*pos)?,
+        };
+        let end_pos = match offset_range.end_bound() {
+            std::ops::Bound::Unbounded => u64::MAX,
+            std::ops::Bound::Excluded(pos) => pos - 1,
+            std::ops::Bound::Included(pos) => *pos,
+        };
+        Ok(Self {
+            reader: base_reader,
+            limit: end_pos - start_pos + 1,
+            read_bytes: 0,
+        })
+    }
+}
+
+impl<T: SeekableRead> Read for RangeRead<T> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.read_bytes >= self.limit as usize {
+            return Ok(0);
+        }
+
+        let len = std::cmp::min(buf.len(), self.limit as usize - self.read_bytes);
+        let read_buf = &mut buf[..len];
+        let bytes_read = self.reader.read(read_buf)?;
+
+        debug_assert!(bytes_read <= read_buf.len());
+        self.read_bytes += bytes_read;
+
+        Ok(bytes_read)
     }
 }

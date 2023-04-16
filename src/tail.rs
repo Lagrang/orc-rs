@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::io::Read;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use bytes::Buf;
@@ -33,43 +31,41 @@ pub struct FileVersion(pub u32, pub u32);
 
 /// Struct which allows to read ORC file metadata: postscript, footer and metadata.
 pub struct FileMetadataReader {
-    file_reader: Box<dyn io_utils::PositionalReader>,
-    compression_registry: Arc<CompressionRegistry>,
+    file_reader: Box<dyn io_utils::PositionalRead>,
 }
 
 /// Try to read 16K from ORC file tail to get footer and postscript in one call.
 /// Should be at least 256 in order to read entire postscript.
 const TAIL_BUFFER_SIZE: usize = 16 * 1024;
+/// Length of the encoded postscript size. Last byte of the ORC file contains length of the postscript body.
+const POSTSCRIPT_SIZE_BYTES: u64 = 1;
 
 impl FileMetadataReader {
-    pub fn new(
-        file_reader: Box<dyn io_utils::PositionalReader>,
-        compression_registry: Arc<CompressionRegistry>,
-    ) -> crate::Result<Self> {
-        Ok(FileMetadataReader {
-            file_reader,
-            compression_registry,
-        })
+    pub fn new(file_reader: Box<dyn io_utils::PositionalRead>) -> crate::Result<Self> {
+        Ok(FileMetadataReader { file_reader })
     }
 
-    pub(crate) fn read_tail(&mut self) -> crate::Result<FileTail> {
-        let file_end_pos: u64 = self.file_reader.end_pos();
-        let tail_start_pos = if file_end_pos > TAIL_BUFFER_SIZE as u64 {
-            file_end_pos - TAIL_BUFFER_SIZE as u64
+    pub(crate) fn read_tail(
+        &mut self,
+        compression_registry: CompressionRegistry,
+    ) -> crate::Result<(FileTail, compression::Compression)> {
+        let file_len: u64 = self.file_reader.len();
+        let (read_pos, buf_size) = if file_len > TAIL_BUFFER_SIZE as u64 {
+            (file_len - TAIL_BUFFER_SIZE as u64, TAIL_BUFFER_SIZE)
         } else {
-            0
+            (0, file_len as usize)
         };
 
-        let mut buffer = io_utils::UninitBytesMut::new(TAIL_BUFFER_SIZE);
-        let bytes_read = self.file_reader.read_at(tail_start_pos, &mut buffer)?;
+        let mut buffer = bytes::BytesMut::with_capacity(buf_size);
+        let bytes_read = self.file_reader.read_at(read_pos, &mut buffer)?;
         if bytes_read < 4 {
             return Err(OrcError::UnexpectedEof(bytes_read));
         }
 
-        let mut read_buffer = buffer.freeze();
+        let mut tail_buffer = buffer.freeze();
 
-        let (postscript, postscript_len) = self.read_postscript(&mut read_buffer)?;
-        let tail_size = postscript.footer_length() + postscript_len + 1;
+        let (postscript, postscript_len) = self.read_postscript(&mut tail_buffer)?;
+        let tail_size = postscript.footer_length() + postscript_len + POSTSCRIPT_SIZE_BYTES;
         let file_size = self.file_reader.len();
         if tail_size >= file_size {
             return Err(OrcError::InvalidTail(tail_size, file_size));
@@ -81,29 +77,38 @@ impl FileMetadataReader {
             version.1 = postscript.version[1];
         }
 
-        let footer = self.read_footer(&postscript, postscript_len, &read_buffer)?;
+        let compression = compression::Compression::new(
+            compression_registry,
+            postscript.compression(),
+            postscript.compression_block_size(),
+        )?;
+
+        let footer = self.read_footer(&tail_buffer, &postscript, postscript_len, &compression)?;
         if footer.encryption.is_some() {
             return Err(OrcError::UnsupportedFeature("Encrypted files".to_string()));
         }
 
         let schema = schema::read_schema(&footer.types, &footer.statistics)?;
 
-        Ok(FileTail {
-            postscript,
-            version,
-            header_size: footer.header_length(),
-            content_size: footer.content_length(),
-            row_count: footer.number_of_rows(),
-            row_index_stride: footer.row_index_stride(),
-            metadata: footer
-                .metadata
-                .iter()
-                .map(|kv| (kv.name().to_owned(), kv.value().to_vec().into()))
-                .collect(),
-            schema: Arc::new(schema),
-            column_statistics: footer.statistics,
-            stripes: footer.stripes,
-        })
+        Ok((
+            FileTail {
+                postscript,
+                version,
+                header_size: footer.header_length(),
+                content_size: footer.content_length(),
+                row_count: footer.number_of_rows(),
+                row_index_stride: footer.row_index_stride(),
+                metadata: footer
+                    .metadata
+                    .iter()
+                    .map(|kv| (kv.name().to_owned(), kv.value().to_vec().into()))
+                    .collect(),
+                schema: Arc::new(schema),
+                column_statistics: footer.statistics,
+                stripes: footer.stripes,
+            },
+            compression,
+        ))
     }
 
     pub fn read_metadata(
@@ -116,8 +121,8 @@ impl FileMetadataReader {
         }
 
         let metadata_size = postscript.metadata_length() as usize;
-        let tail_size = postscript.footer_length() + postscript_len as u64 + 1;
-        let metadata_offset = self.file_reader.end_pos() - tail_size - metadata_size as u64;
+        let tail_size = postscript.footer_length() + postscript_len as u64 + POSTSCRIPT_SIZE_BYTES;
+        let metadata_offset = self.file_reader.len() - tail_size - metadata_size as u64;
         let mut metadata_buffer = self.file_reader.read_exact_at(
             metadata_offset,
             metadata_size,
@@ -129,9 +134,10 @@ impl FileMetadataReader {
 
     fn read_footer(
         &mut self,
+        read_buffer: &Bytes,
         postscript: &proto::PostScript,
         postscript_len: u64,
-        read_buffer: &Bytes,
+        compression: &compression::Compression,
     ) -> crate::Result<proto::Footer> {
         let declared_footer_len = postscript.footer_length() as usize;
         let footer_buffer = if declared_footer_len <= read_buffer.len() {
@@ -139,7 +145,7 @@ impl FileMetadataReader {
             read_buffer.slice(read_buffer.len() - declared_footer_len..)
         } else {
             let file_size = self.file_reader.len();
-            let tail_size = postscript.footer_length() + postscript_len + 1;
+            let tail_size = postscript.footer_length() + postscript_len + POSTSCRIPT_SIZE_BYTES;
             let footer_pos = file_size - tail_size;
             self.file_reader.read_exact_at(
                 footer_pos,
@@ -148,23 +154,14 @@ impl FileMetadataReader {
             )?
         };
 
-        let decompressed_footer = if postscript.compression() != proto::CompressionKind::None {
-            // decompress the footer
-            let compression_codec = self.compression_registry.codec(postscript.compression())?;
-            compression::decompress(
-                footer_buffer.reader(),
-                compression_codec,
-                postscript.compression_block_size(),
-            )
+        let decompressed_footer = compression
+            .decompress_buffer(footer_buffer)
             .map_err(|err| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("ORC footer decompression failed: {err}"),
                 )
-            })?
-        } else {
-            footer_buffer
-        };
+            })?;
 
         let footer = proto::Footer::decode(decompressed_footer).map_err(|err| {
             std::io::Error::new(
@@ -201,7 +198,7 @@ impl FileMetadataReader {
         let file_size = self.file_reader.len();
         let metadata_size = postscript.metadata_length();
         let footer_size = postscript.footer_length();
-        if file_size < metadata_size + footer_size + postscript_len as u64 + 1 {
+        if file_size < metadata_size + footer_size + postscript_len as u64 + POSTSCRIPT_SIZE_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -214,7 +211,7 @@ impl FileMetadataReader {
             ));
         }
 
-        read_buffer.truncate(read_buffer.len() - (postscript_len + 1));
+        read_buffer.truncate(read_buffer.len() - (postscript_len + POSTSCRIPT_SIZE_BYTES as usize));
         Ok((postscript, postscript_len as u64))
     }
 }
@@ -230,16 +227,15 @@ mod tests {
 
     use super::{FileMetadataReader, FileTail, FileVersion};
     use crate::schema;
-    use crate::source::{FileSource, OrcSource};
+    use crate::source::{FileSource, OrcFile};
     use crate::test::matchers::same_tail;
 
     #[test]
     fn test_file_tail() -> Result<()> {
         for (file_name, footer) in prepared_footers() {
             let file = FileSource::new(Path::new(&format!("src/test/test_files/{file_name}")))?;
-            let mut tail_reader =
-                FileMetadataReader::new(file.reader()?, Default::default()).unwrap();
-            let tail = tail_reader.read_tail().unwrap();
+            let mut tail_reader = FileMetadataReader::new(file.positional_reader()?).unwrap();
+            let (tail, _) = tail_reader.read_tail(Default::default()).unwrap();
             verify_that!(tail, same_tail(footer))?;
         }
         Ok(())

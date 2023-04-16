@@ -166,19 +166,32 @@ mod tests {
     #[test]
     fn byte_rle_sequence() -> googletest::Result<()> {
         let mut source_data = BytesMut::new();
-        source_data.put_bytes(1, 5);
-        source_data.put_u8(2);
-        source_data.put_u8(3);
-        source_data.put_u8(4);
+        let mut expected_data = BytesMut::new();
+        source_data.put_u8(15);
+        source_data.put_u8(1);
+        expected_data.put_bytes(1, 18);
         // Test max sized for repeated values.
-        source_data.put_bytes(3, 127);
-        // Test repeated values which should be split to 2 RLE runs.
-        source_data.put_bytes(3, 20);
-        // Test max size for sequence of different values.
+        source_data.put_u8(127);
+        source_data.put_u8(2);
+        expected_data.put_bytes(2, 130);
+        // Test min sized for repeated values.
+        source_data.put_u8(1);
+        source_data.put_u8(3);
+        expected_data.put_bytes(3, 4);
+        // Test sequence of different values.
+        source_data.put_u8(-34i8 as u8);
+        source_data.put_bytes(1, 34);
+        expected_data.put_bytes(1, 34);
+        // Test max size for a sequence of different values.
+        source_data.put_u8(-128i8 as u8);
         for i in 0..128 {
             source_data.put_u8(i);
+            expected_data.put_u8(i);
         }
-        source_data.put_bytes(u8::MAX, 20);
+        // Test min size for a sequence of different values.
+        source_data.put_u8(-1i8 as u8);
+        source_data.put_u8(5);
+        expected_data.put_u8(5);
 
         let reader = Box::new(MemoryReader::from_mut(source_data.clone()));
         let mut rle = ByteRleDecoder::new(reader, BUFFER_SIZE);
@@ -191,7 +204,7 @@ mod tests {
             actual.extend_from_slice(array.as_primitive::<UInt8Type>().values());
         }
 
-        verify_that!(actual, eq(source_data))?;
+        verify_that!(actual, eq(expected_data.to_vec()))?;
         Ok(())
     }
 }

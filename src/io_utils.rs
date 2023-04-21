@@ -267,7 +267,7 @@ impl<T: SeekableRead> Read for RangeRead<T> {
 
         let len = std::cmp::min(buf.len(), self.limit as usize - self.read_bytes);
         let read_buf = &mut buf[..len];
-        let bytes_read = Read::read(self, read_buf)?;
+        let bytes_read = Read::read(&mut self.reader, read_buf)?;
 
         debug_assert!(bytes_read <= read_buf.len());
         self.read_bytes += bytes_read;
@@ -275,3 +275,5 @@ impl<T: SeekableRead> Read for RangeRead<T> {
         Ok(bytes_read)
     }
 }
+
+impl<T: SeekableRead> BufRead for RangeRead<T> {}

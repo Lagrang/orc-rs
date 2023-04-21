@@ -70,8 +70,6 @@ impl RunState {
     }
 }
 
-const BUFFER_SIZE: usize = 4 * 1024;
-
 impl<Input: BufRead> ByteRleDecoder<Input> {
     pub fn new(file_reader: Input, buffer_size: usize) -> Self {
         let cap = cmp::max(buffer_size, 1);
@@ -162,7 +160,9 @@ mod tests {
 
     use crate::source::MemoryReader;
 
-    use super::{ByteRleDecoder, BUFFER_SIZE};
+    use super::ByteRleDecoder;
+
+    const BUFFER_SIZE: usize = 4 * 1024;
 
     #[test]
     fn byte_rle_sequence() -> googletest::Result<()> {

@@ -9,10 +9,11 @@ use crate::source::OrcFile;
 
 use self::index::StripeIndexSet;
 
-pub struct StripeInfo {
+pub struct StripeMetadata {
     pub data_size: u64,
     pub index_size: u64,
     pub num_rows: u64,
+    pub col_stats: Option<Vec<proto::ColumnStatistics>>,
 }
 
 pub struct StripeReader<'a> {

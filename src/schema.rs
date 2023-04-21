@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::io::{Error, Result};
+use std::sync::Arc;
 
 use arrow::datatypes;
 
@@ -47,7 +48,7 @@ fn read_field<N: Into<String>>(
             Ok((
                 vec![datatypes::Field::new(
                     name,
-                    datatypes::DataType::List(Box::new(
+                    datatypes::DataType::List(Arc::new(
                         inner_type.pop().expect("Inner type of list missed"),
                     )),
                     stats.has_null(),
@@ -85,12 +86,12 @@ fn read_field<N: Into<String>>(
                 vec![datatypes::Field::new(
                     name,
                     datatypes::DataType::Map(
-                        Box::new(datatypes::Field::new(
+                        Arc::new(datatypes::Field::new(
                             "entries",
-                            datatypes::DataType::Struct(vec![
+                            datatypes::DataType::Struct(arrow::datatypes::Fields::from(vec![
                                 key_type.pop().expect("Key type of map missed"),
                                 value_type.pop().expect("Value type of map missed"),
-                            ]),
+                            ])),
                             stats.has_null(),
                         )),
                         stats.has_null(),
@@ -130,7 +131,7 @@ fn read_field<N: Into<String>>(
                 Ok((
                     vec![datatypes::Field::new(
                         name,
-                        datatypes::DataType::Struct(subfields),
+                        datatypes::DataType::Struct(arrow::datatypes::Fields::from(subfields)),
                         stats.has_null(),
                     )
                     .with_metadata(HashMap::from([(
@@ -163,8 +164,7 @@ fn read_field<N: Into<String>>(
                 vec![datatypes::Field::new(
                     name,
                     datatypes::DataType::Union(
-                        subfields,
-                        (0..col_type.subtypes.len() as i8).collect(),
+                        datatypes::UnionFields::new(0..col_type.subtypes.len() as i8, subfields),
                         datatypes::UnionMode::Dense,
                     ),
                     stats.has_null(),
@@ -246,6 +246,7 @@ pub(crate) fn get_column_id(field: &arrow::datatypes::Field) -> crate::Result<u3
         .map_err(|_| OrcError::General(format!("Column index is not set for field {}", field)))
 }
 
+#[cfg(test)]
 pub(crate) fn set_column_id(field: arrow::datatypes::Field, id: u32) -> arrow::datatypes::Field {
     field.with_metadata(HashMap::from([(COLUMN_ID.to_string(), id.to_string())]))
 }
@@ -341,8 +342,7 @@ fn validate_proto_schema(types: &Vec<proto::Type>) -> Result<()> {
     // Type_ID: 4
     // Type_ID: 5
     let max_type_id = types.len();
-    for type_id in 0..max_type_id {
-        let field_type = &types[type_id];
+    for (type_id, field_type) in types.iter().enumerate() {
         if field_type.kind() == proto::r#type::Kind::Struct
             && field_type.field_names.len() != field_type.subtypes.len()
         {

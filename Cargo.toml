@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 bytes = "1.2.1"
 prost = "0.11.2"
-arrow = "36.0.0"
+arrow = "37.0.0"
 snap = "1.1.0"
 zstd = "0.12.1+zstd.1.5.2"
 lz4_flex = { version = "0.10.0", default-features = false, features = [
@@ -17,7 +17,7 @@ flate2 = "1.0.25"
 thiserror = "1.0.40"
 
 [dev-dependencies]
-googletest = "0.4.2"
+googletest = "0.5.0"
 similar = "2.2.1"
 colored = "2"
 tempfile = "3.5.0"

@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use bytes::Buf;
 use bytes::Bytes;
 use prost::Message;
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::compression;
 use crate::compression::CompressionRegistry;
@@ -596,38 +595,42 @@ mod tests {
                     schema::set_column_id(
                         datatypes::Field::new(
                             "middle",
-                            datatypes::DataType::Struct(vec![schema::set_column_id(
-                                datatypes::Field::new(
-                                    "list",
-                                    datatypes::DataType::List(Box::new(schema::set_column_id(
-                                        datatypes::Field::new(
-                                            "inner",
-                                            datatypes::DataType::Struct(vec![
-                                                schema::set_column_id(
-                                                    datatypes::Field::new(
-                                                        "int1",
-                                                        datatypes::DataType::Int32,
-                                                        false,
-                                                    ),
-                                                    13,
+                            datatypes::DataType::Struct(datatypes::Fields::from(vec![
+                                schema::set_column_id(
+                                    datatypes::Field::new(
+                                        "list",
+                                        datatypes::DataType::List(Arc::new(schema::set_column_id(
+                                            datatypes::Field::new(
+                                                "inner",
+                                                datatypes::DataType::Struct(
+                                                    datatypes::Fields::from(vec![
+                                                        schema::set_column_id(
+                                                            datatypes::Field::new(
+                                                                "int1",
+                                                                datatypes::DataType::Int32,
+                                                                false,
+                                                            ),
+                                                            13,
+                                                        ),
+                                                        schema::set_column_id(
+                                                            datatypes::Field::new(
+                                                                "string1",
+                                                                datatypes::DataType::Utf8,
+                                                                false,
+                                                            ),
+                                                            14,
+                                                        ),
+                                                    ]),
                                                 ),
-                                                schema::set_column_id(
-                                                    datatypes::Field::new(
-                                                        "string1",
-                                                        datatypes::DataType::Utf8,
-                                                        false,
-                                                    ),
-                                                    14,
-                                                ),
-                                            ]),
-                                            false,
-                                        ),
-                                        12,
-                                    ))),
-                                    false,
+                                                false,
+                                            ),
+                                            12,
+                                        ))),
+                                        false,
+                                    ),
+                                    11,
                                 ),
-                                11,
-                            )]),
+                            ])),
                             false,
                         ),
                         10,
@@ -635,10 +638,10 @@ mod tests {
                     schema::set_column_id(
                         datatypes::Field::new(
                             "list",
-                            datatypes::DataType::List(Box::new(schema::set_column_id(
+                            datatypes::DataType::List(Arc::new(schema::set_column_id(
                                 datatypes::Field::new(
                                     "inner",
-                                    datatypes::DataType::Struct(vec![
+                                    datatypes::DataType::Struct(datatypes::Fields::from(vec![
                                         schema::set_column_id(
                                             datatypes::Field::new(
                                                 "int1",
@@ -655,7 +658,7 @@ mod tests {
                                             ),
                                             18,
                                         ),
-                                    ]),
+                                    ])),
                                     false,
                                 ),
                                 16,
@@ -668,9 +671,9 @@ mod tests {
                         datatypes::Field::new(
                             "map",
                             datatypes::DataType::Map(
-                                Box::new(datatypes::Field::new(
+                                Arc::new(datatypes::Field::new(
                                     "entries",
-                                    datatypes::DataType::Struct(vec![
+                                    datatypes::DataType::Struct(datatypes::Fields::from(vec![
                                         schema::set_column_id(
                                             datatypes::Field::new(
                                                 "key",
@@ -682,29 +685,31 @@ mod tests {
                                         schema::set_column_id(
                                             datatypes::Field::new(
                                                 "value",
-                                                datatypes::DataType::Struct(vec![
-                                                    schema::set_column_id(
-                                                        datatypes::Field::new(
-                                                            "int1",
-                                                            datatypes::DataType::Int32,
-                                                            false,
+                                                datatypes::DataType::Struct(
+                                                    datatypes::Fields::from(vec![
+                                                        schema::set_column_id(
+                                                            datatypes::Field::new(
+                                                                "int1",
+                                                                datatypes::DataType::Int32,
+                                                                false,
+                                                            ),
+                                                            22,
                                                         ),
-                                                        22,
-                                                    ),
-                                                    schema::set_column_id(
-                                                        datatypes::Field::new(
-                                                            "string1",
-                                                            datatypes::DataType::Utf8,
-                                                            false,
+                                                        schema::set_column_id(
+                                                            datatypes::Field::new(
+                                                                "string1",
+                                                                datatypes::DataType::Utf8,
+                                                                false,
+                                                            ),
+                                                            23,
                                                         ),
-                                                        23,
-                                                    ),
-                                                ]),
+                                                    ]),
+                                                ),
                                                 false,
                                             ),
                                             21,
                                         ),
-                                    ]),
+                                    ])),
                                     false,
                                 )),
                                 false,

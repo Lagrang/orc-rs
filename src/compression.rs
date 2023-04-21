@@ -1,4 +1,4 @@
-use crate::io_utils::{RangeRead, WriteBuffer};
+use crate::io_utils::{BufRead, RangeRead, WriteBuffer};
 use crate::{proto, source};
 use bytes::{Buf, Bytes, BytesMut};
 use flate2::Status;
@@ -41,7 +41,7 @@ impl Compression {
         source: &dyn source::OrcFile,
         start_offset: u64,
         len: u64,
-    ) -> std::io::Result<Box<dyn Read + 's>> {
+    ) -> std::io::Result<Box<dyn BufRead + 's>> {
         return if let Some(codec) = &self.codec {
             let reader = source.positional_reader()?;
             let range_reader = RangeRead::new(reader, start_offset..len)?;
@@ -410,3 +410,5 @@ impl<'codec, Input: Read> Read for DecompressionStream<'codec, Input> {
         Ok(max_size - remaining)
     }
 }
+
+impl<'codec, Input: Read> BufRead for DecompressionStream<'codec, Input> {}

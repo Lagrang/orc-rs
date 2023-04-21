@@ -135,19 +135,18 @@ unsafe impl BufMut for WriteBuffer {
     }
 }
 
-pub trait SeekableRead: Read {
-    fn seek(&mut self, pos: u64) -> std::io::Result<u64>;
+pub trait SizedStream: Read {
+    fn len(&self) -> u64;
 }
 
-impl<T: SeekableRead + ?Sized> SeekableRead for Box<T> {
-    fn seek(&mut self, pos: u64) -> std::io::Result<u64> {
-        self.as_mut().seek(pos)
+impl<T: SizedStream + ?Sized> SizedStream for Box<T> {
+    fn len(&self) -> u64 {
+        self.deref().len()
     }
 }
 
-pub trait PositionalRead: SeekableRead {
-    fn len(&self) -> u64;
-
+/// Trait which provide implementation for the reading into [`bytes::BufMut`] and stream length.
+pub trait BufRead: Read {
     fn read(&mut self, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         let mut byte_read = 0;
         loop {
@@ -180,10 +179,33 @@ pub trait PositionalRead: SeekableRead {
             }
         }
     }
+}
 
+impl<T: BufRead + ?Sized> BufRead for Box<T> {
+    fn read(&mut self, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
+        BufRead::read(self.as_mut(), buffer)
+    }
+}
+
+/// Trait which allows to seek to the some position in the stream.
+pub trait SeekableRead: BufRead + SizedStream {
+    /// Seeks to the particular position inside the stream.
+    ///
+    /// Position should be in range [0..[`BufRead::len()`]).
+    fn seek(&mut self, pos: u64) -> std::io::Result<u64>;
+}
+
+impl<T: SeekableRead + ?Sized> SeekableRead for Box<T> {
+    fn seek(&mut self, pos: u64) -> std::io::Result<u64> {
+        self.as_mut().seek(pos)
+    }
+}
+
+/// Trait which allows to perform read operations at some offset(similar to Posix pread).
+pub trait PositionalRead: SeekableRead {
     fn read_at(&mut self, pos: u64, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         self.seek(pos)?;
-        PositionalRead::read(self, buffer)
+        BufRead::read(self, buffer)
     }
 
     fn read_exact_at(
@@ -245,7 +267,7 @@ impl<T: SeekableRead> Read for RangeRead<T> {
 
         let len = std::cmp::min(buf.len(), self.limit as usize - self.read_bytes);
         let read_buf = &mut buf[..len];
-        let bytes_read = self.reader.read(read_buf)?;
+        let bytes_read = Read::read(self, read_buf)?;
 
         debug_assert!(bytes_read <= read_buf.len());
         self.read_bytes += bytes_read;

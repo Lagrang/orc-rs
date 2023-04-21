@@ -4,14 +4,14 @@ use std::io::{Read, Seek, SeekFrom};
 
 use bytes::{Buf, Bytes};
 
-use crate::io_utils::{PositionalRead, SeekableRead};
+use crate::io_utils::{BufRead, PositionalRead, SeekableRead, SizedStream};
 
 /// ORC file source abstraction.
 /// Each source represent ORC file located on some 'source', i.e. file, memory buffer, etc.
 pub trait OrcFile {
     /// Creates a new reader for ORC file.
     fn positional_reader(&self) -> std::io::Result<Box<dyn PositionalRead>>;
-    fn reader(&self) -> std::io::Result<Box<dyn Read>>;
+    fn reader(&self) -> std::io::Result<Box<dyn BufRead>>;
 }
 
 pub struct FileSource {
@@ -53,7 +53,7 @@ impl OrcFile for FileSource {
         )?))
     }
 
-    fn reader(&self) -> std::io::Result<Box<dyn Read>> {
+    fn reader(&self) -> std::io::Result<Box<dyn BufRead>> {
         Ok(Box::new(FileReader::new(
             self.file.try_clone()?,
             self.end_pos,
@@ -86,6 +86,15 @@ impl FileReader {
     }
 }
 
+impl BufRead for FileReader {}
+
+impl SizedStream for FileReader {
+    #[inline]
+    fn len(&self) -> u64 {
+        self.end_pos - self.start_pos + 1
+    }
+}
+
 impl SeekableRead for FileReader {
     #[inline]
     fn seek(&mut self, pos: u64) -> std::io::Result<u64> {
@@ -93,12 +102,7 @@ impl SeekableRead for FileReader {
     }
 }
 
-impl PositionalRead for FileReader {
-    #[inline]
-    fn len(&self) -> u64 {
-        self.end_pos - self.start_pos + 1
-    }
-}
+impl PositionalRead for FileReader {}
 
 impl Read for FileReader {
     #[inline]
@@ -128,6 +132,15 @@ impl MemoryReader {
     }
 }
 
+impl BufRead for MemoryReader {}
+
+impl SizedStream for MemoryReader {
+    #[inline]
+    fn len(&self) -> u64 {
+        self.buffer.len() as u64
+    }
+}
+
 impl SeekableRead for MemoryReader {
     fn seek(&mut self, pos: u64) -> std::io::Result<u64> {
         let range = ..self.len();
@@ -142,12 +155,7 @@ impl SeekableRead for MemoryReader {
     }
 }
 
-impl PositionalRead for MemoryReader {
-    #[inline]
-    fn len(&self) -> u64 {
-        self.buffer.len() as u64
-    }
-}
+impl PositionalRead for MemoryReader {}
 
 impl Read for MemoryReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -173,7 +181,7 @@ mod tests {
     use googletest::matchers::{anything, eq, err};
     use googletest::verify_that;
 
-    use crate::io_utils::PositionalRead;
+    use crate::io_utils::{BufRead, PositionalRead};
 
     use super::{FileReader, MemoryReader};
 
@@ -222,24 +230,21 @@ mod tests {
         // Pass read buffer greater than actual data size
         let mut reader = reader_factory(expected_content.clone())?;
         let mut read_buffer = BytesMut::with_capacity(expected_content.len() * 2);
-        let bytes_read = PositionalRead::read(reader.as_mut(), &mut read_buffer)?;
+        let bytes_read = BufRead::read(reader.as_mut(), &mut read_buffer)?;
         verify_that!(bytes_read, eq(expected_content.len()))?;
         verify_that!(&read_buffer, eq(&expected_content))?;
 
         // Pass read buffer less than actual data size
         let mut reader = reader_factory(expected_content.clone())?;
         let mut read_buffer = BytesMut::with_capacity(expected_content.len() / 2);
-        let mut bytes_read = PositionalRead::read(reader.as_mut(), &mut read_buffer)?;
+        let mut bytes_read = BufRead::read(reader.as_mut(), &mut read_buffer)?;
         verify_that!(bytes_read, eq(read_buffer.len()))?;
         read_buffer.reserve(expected_content.len() - read_buffer.len());
-        bytes_read += PositionalRead::read(reader.as_mut(), &mut read_buffer)?;
+        bytes_read += BufRead::read(reader.as_mut(), &mut read_buffer)?;
         verify_that!(bytes_read, eq(expected_content.len()))?;
         verify_that!(&read_buffer, eq(&expected_content))?;
         read_buffer.reserve(1);
-        verify_that!(
-            PositionalRead::read(reader.as_mut(), &mut read_buffer)?,
-            eq(0)
-        )?;
+        verify_that!(BufRead::read(reader.as_mut(), &mut read_buffer)?, eq(0))?;
 
         let mut reader = reader_factory(expected_content.clone())?;
         let mut read_buffer = BytesMut::with_capacity(expected_content.len());

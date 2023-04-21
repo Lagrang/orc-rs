@@ -19,6 +19,7 @@ pub struct StripeReader<'a> {
     orc_file: &'a dyn OrcFile,
     compression: &'a compression::Compression,
     stripe_meta: proto::StripeInformation,
+    stripe_footer: proto::StripeFooter,
     indexes: Option<index::StripeIndexSet>,
     file_schema: arrow::datatypes::SchemaRef,
     // Schema for record batch returned by this reader. Used to filter out unnecessary columns.
@@ -37,6 +38,7 @@ impl<'a> StripeReader<'a> {
             orc_file,
             compression: reader_factory,
             stripe_meta: stripe,
+            stripe_footer: Default::default(),
             file_schema: file_schema.clone(),
             indexes: None,
             out_schema: file_schema.clone(),
@@ -44,14 +46,37 @@ impl<'a> StripeReader<'a> {
         }
     }
 
-    pub fn read(&mut self) -> crate::Result<arrow::record_batch::RecordBatch> {
+    pub fn read(
+        &mut self,
+        batch_size: usize,
+    ) -> crate::Result<Option<arrow::record_batch::RecordBatch>> {
         if self.col_readers.is_empty() {
             self.init()?;
         }
 
-        Ok(arrow::record_batch::RecordBatch::new_empty(
-            self.out_schema.clone(),
-        ))
+        let mut arrays = Vec::with_capacity(self.col_readers.len());
+        for col_reader in &mut self.col_readers {
+            if let Some(array) = col_reader.read(batch_size)? {
+                arrays.push(array);
+            }
+        }
+
+        // All column readers have no more data, all stripe data consumed.
+        if arrays.is_empty() {
+            return Ok(None);
+        }
+
+        // File corrupted, some column have more rows than another.
+        if arrays.len() != self.col_readers.len() {
+            return Err(crate::OrcError::ColumnLenNotEqual(
+                self.stripe_meta.clone(),
+                self.stripe_footer.clone(),
+            ));
+        }
+
+        arrow::record_batch::RecordBatch::try_new(self.out_schema.clone(), arrays)
+            .map(Some)
+            .map_err(|e| e.into())
     }
 
     pub fn init(&mut self) -> crate::Result<()> {
@@ -66,12 +91,12 @@ impl<'a> StripeReader<'a> {
             "Stripe footer",
         )?;
 
-        let footer = proto::StripeFooter::decode(footer_buf)?;
+        self.stripe_footer = proto::StripeFooter::decode(footer_buf)?;
         // validate streams
         let stripe_end_offset = self.stripe_meta.offset()
             + self.stripe_meta.index_length()
             + self.stripe_meta.data_length();
-        for stream in &footer.streams {
+        for stream in &self.stripe_footer.streams {
             if self.stripe_meta.offset() + stream.length() > stripe_end_offset {
                 return Err(crate::OrcError::MalformedStream(
                     self.stripe_meta.clone(),
@@ -80,17 +105,17 @@ impl<'a> StripeReader<'a> {
             }
         }
 
-        self.indexes = Some(self.read_index(file_reader.as_mut(), &footer)?);
+        self.indexes = Some(self.read_index(file_reader.as_mut(), &self.stripe_footer)?);
         // footer.writer_timezone.map(|tz| );
 
         for column in self.out_schema.fields() {
-            self.col_readers.push(column_reader::create_reader(
+            self.col_readers.push(Box::new(column_reader::create_reader(
                 column,
                 self.orc_file,
-                &footer,
+                &self.stripe_footer,
                 &self.stripe_meta,
                 self.compression,
-            )?);
+            )?));
         }
 
         Ok(())

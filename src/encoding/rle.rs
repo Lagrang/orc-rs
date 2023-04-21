@@ -1,13 +1,8 @@
 use std::cmp;
-use std::sync::Arc;
 
 use bytes::{Buf, BufMut, BytesMut};
 
-use crate::io_utils::PositionalRead;
-
-pub trait RleDecoder {
-    fn read(&mut self, batch_size: usize) -> crate::Result<arrow::array::ArrayRef>;
-}
+use crate::io_utils::{self, BufRead};
 
 /// For byte streams, ORC uses a very light weight encoding of identical values.
 ///     - Run: a sequence of at least 3 identical values
@@ -16,8 +11,9 @@ pub trait RleDecoder {
 /// or literal list (value between -128 to -1). For runs, the control byte is the length of the run minus the length
 /// of the minimal run (3) and the control byte for literal lists is the negative length of the list.
 /// For example, a hundred 0’s is encoded as [0x61, 0x00] and the sequence 0x44, 0x45 would be encoded as [0xfe, 0x44, 0x45].
-pub struct ByteRleDecoder {
-    file_reader: Box<dyn PositionalRead>,
+pub struct ByteRleDecoder<Input> {
+    file_reader: Input,
+    completed: bool,
     // Block of data read from file but not processed yet
     buffer: BytesMut,
     // State of current run
@@ -76,9 +72,23 @@ impl RunState {
 
 const BUFFER_SIZE: usize = 4 * 1024;
 
-impl RleDecoder for ByteRleDecoder {
-    fn read(&mut self, batch_size: usize) -> crate::Result<arrow::array::ArrayRef> {
-        let mut builder = arrow::array::UInt8Builder::with_capacity(batch_size);
+impl<Input: BufRead> ByteRleDecoder<Input> {
+    pub fn new(file_reader: Input, buffer_size: usize) -> Self {
+        let cap = cmp::max(buffer_size, 1);
+        Self {
+            file_reader,
+            completed: false,
+            buffer: BytesMut::with_capacity(cap),
+            current_run: RunState::empty(),
+        }
+    }
+
+    pub fn read(&mut self, batch_size: usize) -> crate::Result<Option<arrow::buffer::Buffer>> {
+        if self.completed {
+            return Ok(None);
+        }
+
+        let mut builder = Vec::with_capacity(batch_size);
         let mut remaining_values = batch_size;
         while remaining_values > 0 {
             // Current RLE run completed or buffer with values exhausted.
@@ -86,6 +96,7 @@ impl RleDecoder for ByteRleDecoder {
                 && !self.read_next_block()?
             {
                 // No more data to decode
+                self.completed = true;
                 break;
             }
 
@@ -95,14 +106,12 @@ impl RleDecoder for ByteRleDecoder {
                     cmp::min(self.current_run.remaining(), remaining_values),
                     self.buffer.remaining(),
                 );
-                builder.append_slice(&self.buffer[..count]);
+                builder.extend_from_slice(&self.buffer[..count]);
                 self.buffer.advance(count);
                 count
             } else {
                 let count = cmp::min(self.current_run.remaining(), remaining_values);
-                let mut values = BytesMut::with_capacity(count);
-                values.put_bytes(self.buffer[0], count);
-                builder.append_slice(&values);
+                builder.put_bytes(self.buffer[0], count);
                 count
             };
 
@@ -113,23 +122,17 @@ impl RleDecoder for ByteRleDecoder {
                 self.buffer.advance(1);
             }
         }
-        Ok(Arc::new(builder.finish()))
-    }
-}
 
-impl ByteRleDecoder {
-    fn new(file_reader: Box<dyn PositionalRead>, buffer_size: usize) -> Self {
-        let cap = cmp::max(buffer_size, 1);
-        Self {
-            file_reader,
-            buffer: BytesMut::with_capacity(cap),
-            current_run: RunState::empty(),
+        if !builder.is_empty() {
+            Ok(Some(arrow::buffer::Buffer::from_vec(builder)))
+        } else {
+            Ok(None)
         }
     }
 
     fn read_next_block(&mut self) -> crate::Result<bool> {
         if self.buffer.is_empty() {
-            let bytes_read = PositionalRead::read(self.file_reader.as_mut(), &mut self.buffer)?;
+            let bytes_read = io_utils::BufRead::read(&mut self.file_reader, &mut self.buffer)?;
             if bytes_read == 0 {
                 if self.current_run.has_values() {
                     return Err(crate::OrcError::MalformedRleBlock);
@@ -153,15 +156,13 @@ impl ByteRleDecoder {
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::AsArray;
-    use arrow::datatypes::UInt8Type;
     use bytes::{BufMut, BytesMut};
     use googletest::matchers::eq;
     use googletest::verify_that;
 
     use crate::source::MemoryReader;
 
-    use super::{ByteRleDecoder, RleDecoder, BUFFER_SIZE};
+    use super::{ByteRleDecoder, BUFFER_SIZE};
 
     #[test]
     fn byte_rle_sequence() -> googletest::Result<()> {
@@ -193,15 +194,15 @@ mod tests {
         source_data.put_u8(5);
         expected_data.put_u8(5);
 
-        let reader = Box::new(MemoryReader::from_mut(source_data.clone()));
+        let reader = MemoryReader::from_mut(source_data.clone());
         let mut rle = ByteRleDecoder::new(reader, BUFFER_SIZE);
         let mut actual = Vec::new();
         loop {
             let array = rle.read(3)?;
-            if array.is_empty() {
+            if array.is_none() {
                 break;
             }
-            actual.extend_from_slice(array.as_primitive::<UInt8Type>().values());
+            actual.extend_from_slice(array.unwrap().as_slice());
         }
 
         verify_that!(actual, eq(expected_data.to_vec()))?;

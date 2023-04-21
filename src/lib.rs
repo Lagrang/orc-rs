@@ -43,6 +43,11 @@ pub enum OrcError {
     MalformedRleBlock,
     #[error("Column {1:?} doesn't contain a stream with kind {0:?}")]
     InvalidStreamKind(proto::stream::Kind, u32),
+    #[error(
+        "Arrow batch can't be created: some ORC file columns returned more data than others.
+        Stripe footer: {0:?}, stripe info: {1:?}"
+    )]
+    ColumnLenNotEqual(proto::StripeInformation, proto::StripeFooter),
 }
 
 impl From<std::io::Error> for OrcError {
@@ -54,5 +59,11 @@ impl From<std::io::Error> for OrcError {
 impl From<prost::DecodeError> for OrcError {
     fn from(e: prost::DecodeError) -> Self {
         OrcError::CorruptedProtobuf(e.to_string())
+    }
+}
+
+impl From<arrow::error::ArrowError> for OrcError {
+    fn from(e: arrow::error::ArrowError) -> Self {
+        OrcError::General(e.to_string())
     }
 }

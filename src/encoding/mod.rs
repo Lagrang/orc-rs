@@ -229,8 +229,7 @@ impl UnsignedInteger<2, 3> for u16 {
 
     #[inline]
     fn zigzag_decode(&self) -> i16 {
-        let v = *self as i16;
-        (v >> 1) ^ (v & 1).neg()
+        (*self >> 1) as i16 ^ ((*self & 1) as i16).neg()
     }
 }
 
@@ -251,8 +250,7 @@ impl UnsignedInteger<4, 5> for u32 {
 
     #[inline]
     fn zigzag_decode(&self) -> i32 {
-        let v = *self as i32;
-        (v >> 1) ^ (v & 1).neg()
+        (*self >> 1) as i32 ^ ((*self & 1) as i32).neg()
     }
 }
 
@@ -273,8 +271,7 @@ impl UnsignedInteger<8, 10> for u64 {
 
     #[inline]
     fn zigzag_decode(&self) -> i64 {
-        let v = *self as i64;
-        (v >> 1) ^ (v & 1).neg()
+        (*self >> 1) as i64 ^ ((*self & 1) as i64).neg()
     }
 }
 

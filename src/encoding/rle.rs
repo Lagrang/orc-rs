@@ -219,6 +219,7 @@ where
             return Ok(None);
         }
 
+        let mut decoded_count = 0;
         let mut builder = BytesMut::with_capacity(batch_size * TYPE_SIZE);
         let mut remaining_values = batch_size;
         while remaining_values > 0 {
@@ -249,7 +250,6 @@ where
             } else {
                 // Values are based on delta and base value
                 let count = cmp::min(self.current_run.remaining(), remaining_values);
-                builder.reserve(count * TYPE_SIZE);
                 for _ in 0..count {
                     builder.put_slice(&(self.base_value + self.delta).to_le_bytes());
                     self.base_value += self.delta;
@@ -258,13 +258,16 @@ where
             };
 
             remaining_values -= count;
+            decoded_count += count;
             self.current_run.increment_consumed(count);
         }
 
         if !builder.is_empty() {
-            let len = builder.len();
-            let buffer = arrow::buffer::Buffer::from_vec(builder.to_vec());
-            Ok(Some(arrow::buffer::ScalarBuffer::new(buffer, 0, len)))
+            Ok(Some(arrow::buffer::ScalarBuffer::new(
+                arrow::buffer::Buffer::from_vec(builder.to_vec()),
+                0,
+                decoded_count,
+            )))
         } else {
             Ok(None)
         }
@@ -385,7 +388,7 @@ mod tests {
         let mut source_data = BytesMut::new();
         let mut expected_data = BytesMut::new();
         // Test sequence of values
-        let values: Vec<i8> = vec![0, 10, i8::MAX, 0, -1, i8::MIN];
+        let values: Vec<i8> = vec![0, 10, i8::MAX, -1, i8::MIN];
         source_data.put_i8((values.len() as i8).neg());
         for v in values {
             let (encoded, size) = v.as_varint();
@@ -393,7 +396,119 @@ mod tests {
             expected_data.put_slice(&v.to_le_bytes());
         }
 
-        validate_int_rle::<i8>(source_data.freeze(), expected_data.freeze())
+        validate_int_rle::<1, 2, i8>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn i16_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<i16> = vec![0, 10, i16::MAX, -1, i16::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<2, 3, i16>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn i32_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<i32> = vec![0, 10, i32::MAX, -1, i32::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<4, 5, i32>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn i64_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<i64> = vec![0, 10, i64::MAX, -1, i64::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<8, 10, i64>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn u8_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<u8> = vec![0, 1, 10, u8::MAX, u8::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<1, 2, u8>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn u16_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<u16> = vec![0, 10, u16::MAX, u16::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<2, 3, u16>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn u32_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<u32> = vec![0, 10, u32::MAX, u32::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<4, 5, u32>(source_data.freeze(), expected_data.freeze())
+    }
+
+    #[test]
+    fn u64_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<u64> = vec![0, 10, u64::MAX, u64::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<8, 10, u64>(source_data.freeze(), expected_data.freeze())
     }
 
     fn validate_int_rle<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize, IntType>(

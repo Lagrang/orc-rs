@@ -4,7 +4,7 @@ use bytes::{Buf, BufMut, BytesMut};
 
 use crate::io_utils::{self, BufRead};
 
-use super::{SignedInt, ToBytes};
+use super::Integer;
 
 struct RunState {
     // Index of last element in 'plain' sequence of values
@@ -155,41 +155,6 @@ impl<Input: BufRead> ByteRleDecoder<Input> {
     }
 }
 
-/// Decode 'base 128 varint' value.
-/// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
-/// Expected order of varint bytes is little endian.
-///
-/// Examples:
-/// - 128 => [0x80, 0x01]
-/// - 16383 => [0xff, 0x7f]
-fn varint_decode<const N: usize, T: SignedInt<N>>(buffer: &[u8]) -> (T, usize) {
-    let first: T = From::from(buffer[0] as i8);
-    if first >= From::from(0i8) {
-        return (first, 1);
-    }
-
-    let mask: T = From::from(0x7fi8);
-    let mut result = first & mask;
-    let mut i = 1;
-    let mut offset: T = From::from(0i8);
-    while (buffer[i] as i8) < 0 {
-        offset += From::from(7i8);
-        let next: T = From::from(buffer[i] as i8);
-        result |= (next & mask) << offset;
-        i += 1;
-    }
-
-    (result, i + 1)
-}
-
-/// Decode using Zigzag algorithm.
-///
-/// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#signed-ints)
-fn zigzag_decode<const N: usize, T: SignedInt<N>>(value: T) -> T {
-    let shift = From::from(1i8);
-    (value >> shift) ^ (value & shift).neg()
-}
-
 /// In Hive 0.11 ORC files used Run Length Encoding version 1 (RLEv1), which provides
 /// a lightweight compression of signed or unsigned integer sequences.
 ///
@@ -210,11 +175,9 @@ fn zigzag_decode<const N: usize, T: SignedInt<N>>(value: T) -> T {
 /// of literals in the sequence. Following the header byte, the list of N varints is encoded.
 /// Thus, if there are no runs, the overhead is 1 byte for each 128 integers.
 /// Numbers [2, 3, 6, 7, 11] would be encoded as [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb].
-pub(crate) struct IntRleV1Decoder<const N: usize, Input, IntType: SignedInt<N>> {
+pub(crate) struct IntRleV1Decoder<Input, IntType> {
     file_reader: Input,
     completed: bool,
-    // Indicates that encoded integers are signed and we should use ZigZag encoding for them.
-    is_signed: bool,
     // Block of data read from file but not processed yet.
     buffer: BytesMut,
     // State of current run.
@@ -226,29 +189,37 @@ pub(crate) struct IntRleV1Decoder<const N: usize, Input, IntType: SignedInt<N>> 
     base_value: IntType,
 }
 
-impl<const N: usize, Input: BufRead, IntType: SignedInt<N>> IntRleV1Decoder<N, Input, IntType> {
-    pub fn new(file_reader: Input, is_signed: bool, buffer_size: usize) -> Self {
+impl<Input, IntType> IntRleV1Decoder<Input, IntType>
+where
+    Input: BufRead,
+{
+    pub fn new<const N: usize, const M: usize>(file_reader: Input, buffer_size: usize) -> Self
+    where
+        IntType: Integer<N, M>,
+    {
         let cap = cmp::max(buffer_size, 1);
         Self {
             file_reader,
             completed: false,
             buffer: BytesMut::with_capacity(cap),
             current_run: RunState::empty(),
-            delta: From::from(0i8),
-            base_value: From::from(0i8),
-            is_signed,
+            delta: IntType::ZERO,
+            base_value: IntType::ZERO,
         }
     }
 
-    pub fn read(
+    pub fn read<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>(
         &mut self,
         batch_size: usize,
-    ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>> {
+    ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
+    where
+        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
+    {
         if self.completed {
             return Ok(None);
         }
 
-        let mut builder = BytesMut::with_capacity(batch_size);
+        let mut builder = BytesMut::with_capacity(batch_size * TYPE_SIZE);
         let mut remaining_values = batch_size;
         while remaining_values > 0 {
             // Current RLE run completed or buffer with values exhausted.
@@ -267,25 +238,18 @@ impl<const N: usize, Input: BufRead, IntType: SignedInt<N>> IntRleV1Decoder<N, I
                     self.buffer.remaining(),
                 );
                 let mut bytes_read = 0;
-                if self.is_signed {
-                    for _ in 0..count {
-                        let (val, bytes) = varint_decode::<N, IntType>(&self.buffer);
-                        bytes_read += bytes;
-                        builder.put_slice(&zigzag_decode::<N, IntType>(val).to_le_bytes());
-                    }
-                } else {
-                    for _ in 0..count {
-                        let (val, bytes) = varint_decode::<N, IntType>(&self.buffer);
-                        bytes_read += bytes;
-                        builder.put_slice(&val.to_le_bytes());
-                    }
+                for _ in 0..count {
+                    let (val, bytes): (IntType, usize) =
+                        IntType::varint_decode(&self.buffer[bytes_read..]);
+                    bytes_read += bytes;
+                    builder.put_slice(&val.to_le_bytes());
                 }
                 self.buffer.advance(bytes_read);
                 count
             } else {
                 // Values are based on delta and base value
                 let count = cmp::min(self.current_run.remaining(), remaining_values);
-                builder.reserve(count * 8);
+                builder.reserve(count * TYPE_SIZE);
                 for _ in 0..count {
                     builder.put_slice(&(self.base_value + self.delta).to_le_bytes());
                     self.base_value += self.delta;
@@ -306,7 +270,10 @@ impl<const N: usize, Input: BufRead, IntType: SignedInt<N>> IntRleV1Decoder<N, I
         }
     }
 
-    fn read_next_block(&mut self) -> crate::Result<bool> {
+    fn read_next_block<const N: usize, const M: usize>(&mut self) -> crate::Result<bool>
+    where
+        IntType: Integer<N, M>,
+    {
         if self.buffer.is_empty() {
             let bytes_read = io_utils::BufRead::read(&mut self.file_reader, &mut self.buffer)?;
             if bytes_read == 0 {
@@ -341,14 +308,9 @@ impl<const N: usize, Input: BufRead, IntType: SignedInt<N>> IntRleV1Decoder<N, I
                     }
                 }
 
-                self.delta = From::from(self.buffer[0] as i8);
+                self.delta = IntType::from_byte(self.buffer[0]);
                 // Skip 1 header byte and try to decode base value of run
-                let (value, bytes_read) = if self.is_signed {
-                    varint_decode::<N, IntType>(&self.buffer[1..])
-                } else {
-                    let (value, bytes_read) = varint_decode::<N, IntType>(&self.buffer[1..]);
-                    (zigzag_decode(value), bytes_read)
-                };
+                let (value, bytes_read) = IntType::varint_decode(&self.buffer[1..]);
                 self.base_value = value;
                 self.buffer.advance(bytes_read + 1);
             }
@@ -360,13 +322,16 @@ impl<const N: usize, Input: BufRead, IntType: SignedInt<N>> IntRleV1Decoder<N, I
 
 #[cfg(test)]
 mod tests {
-    use bytes::{BufMut, BytesMut};
+    use std::ops::Neg;
+
+    use bytes::{BufMut, Bytes, BytesMut};
     use googletest::matchers::eq;
     use googletest::verify_that;
 
+    use crate::encoding::Integer;
     use crate::source::MemoryReader;
 
-    use super::ByteRleDecoder;
+    use super::{ByteRleDecoder, IntRleV1Decoder};
 
     const BUFFER_SIZE: usize = 4 * 1024;
 
@@ -409,6 +374,46 @@ mod tests {
                 break;
             }
             actual.extend_from_slice(array.unwrap().as_slice());
+        }
+
+        verify_that!(actual, eq(expected_data.to_vec()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn i8_rle_v1_sequence() -> googletest::Result<()> {
+        let mut source_data = BytesMut::new();
+        let mut expected_data = BytesMut::new();
+        // Test sequence of values
+        let values: Vec<i8> = vec![0, 10, i8::MAX, 0, -1, i8::MIN];
+        source_data.put_i8((values.len() as i8).neg());
+        for v in values {
+            let (encoded, size) = v.as_varint();
+            source_data.put_slice(&encoded[..size]);
+            expected_data.put_slice(&v.to_le_bytes());
+        }
+
+        validate_int_rle::<i8>(source_data.freeze(), expected_data.freeze())
+    }
+
+    fn validate_int_rle<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize, IntType>(
+        encoded_data: Bytes,
+        expected_data: Bytes,
+    ) -> googletest::Result<()>
+    where
+        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
+    {
+        let reader = MemoryReader::from(encoded_data);
+        let mut rle: IntRleV1Decoder<MemoryReader, IntType> =
+            IntRleV1Decoder::new(reader, BUFFER_SIZE);
+
+        let mut actual = Vec::new();
+        loop {
+            let array = rle.read(3)?;
+            if array.is_none() {
+                break;
+            }
+            actual.extend_from_slice(array.unwrap().inner().as_slice());
         }
 
         verify_that!(actual, eq(expected_data.to_vec()))?;

@@ -34,6 +34,8 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
     /// Expected order of varint bytes is little endian.
     fn varint_decode(buffer: &[u8]) -> (Self, usize);
+
+    fn add_i8(&self, other: i8) -> Self;
 }
 
 impl Integer<1, 2> for i8 {
@@ -41,13 +43,18 @@ impl Integer<1, 2> for i8 {
 
     #[inline]
     fn as_varint(&self) -> ([u8; 2], usize) {
-        varint_encode(self.zigzag_encode())
+        self.zigzag_encode().as_varint()
     }
 
     #[inline]
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         let (decoded, size): (u8, usize) = UnsignedInteger::varint_decode(buffer);
         (decoded.zigzag_decode(), size)
+    }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        self + other
     }
 }
 
@@ -56,13 +63,18 @@ impl Integer<2, 3> for i16 {
 
     #[inline]
     fn as_varint(&self) -> ([u8; 3], usize) {
-        varint_encode(self.zigzag_encode())
+        self.zigzag_encode().as_varint()
     }
 
     #[inline]
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         let (decoded, size): (u16, usize) = UnsignedInteger::varint_decode(buffer);
         (decoded.zigzag_decode(), size)
+    }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        self + other as i16
     }
 }
 
@@ -71,13 +83,18 @@ impl Integer<4, 5> for i32 {
 
     #[inline]
     fn as_varint(&self) -> ([u8; 5], usize) {
-        varint_encode(self.zigzag_encode())
+        self.zigzag_encode().as_varint()
     }
 
     #[inline]
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         let (decoded, size): (u32, usize) = UnsignedInteger::varint_decode(buffer);
         (decoded.zigzag_decode(), size)
+    }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        self + other as i32
     }
 }
 
@@ -86,13 +103,18 @@ impl Integer<8, 10> for i64 {
 
     #[inline]
     fn as_varint(&self) -> ([u8; 10], usize) {
-        varint_encode(self.zigzag_encode())
+        self.zigzag_encode().as_varint()
     }
 
     #[inline]
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         let (decoded, size): (u64, usize) = UnsignedInteger::varint_decode(buffer);
         (decoded.zigzag_decode(), size)
+    }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        self + other as i64
     }
 }
 
@@ -149,6 +171,33 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
 {
     /// Type represent unsigned counterpart of this type, e.g. u8 => i8.
     type SignedCounterpart;
+    /// Value which contains a mask used by varint encoder/decoder.
+    /// Mask should have following form: 7 least significant bits are set to 0,
+    /// others, starting from 8 up to TYPE_SIZE * 8, set to 1.
+    const VARINT_MASK: Self;
+    /// Value used by varint algorithm to shift 7 bits of Self to left/right.
+    const VARINT_SHIFT: Self;
+
+    fn varint_encode(value: Self) -> ([u8; MAX_ENCODED_SIZE], usize) {
+        let mut result = [0u8; MAX_ENCODED_SIZE];
+        let mut i = 0;
+        let mut v = value;
+        // Scan bits of the value starting from least significant(LS):
+        // Starting from 7th bit try to find at least 1 bit which is set.
+        // If there is no such bit, encoded varint value formed.
+        // Otherwise, write 7 LS bits to the output and append
+        // continuation marker(one bit set to '1') and proceed to the next 7 bit.
+        loop {
+            result[i] = (Self::VARINT_MASK | v).truncate_to_u8();
+            if v & Self::VARINT_MASK == Self::ZERO {
+                result[i] &= !Self::VARINT_MASK.truncate_to_u8();
+                break;
+            }
+            v >>= Self::VARINT_SHIFT;
+            i += 1;
+        }
+        (result, i + 1)
+    }
 
     /// Decode 'base 128 varint' value.
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
@@ -158,27 +207,17 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
     /// - 128 => [0x80, 0x01]
     /// - 16383 => [0xff, 0x7f]
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        // let first: Self = From::from(buffer[0]);
-        // First bit is not set, stop
-        // if first & From::from(0x80) == Self::ZERO {
-        //     return (first, 1);
-        // }
-
-        let unsigned_mask: Self = From::from(0x7f);
-        let signed_mask: Self = From::from(0x80);
-        let shift: Self = From::from(7);
-
         let mut result = Self::ZERO;
         let mut i = 0;
         let mut offset: Self = Self::ZERO;
         loop {
             let byte: Self = From::from(buffer[i]);
-            result |= (byte & unsigned_mask) << offset;
+            result |= (byte & !Self::VARINT_MASK) << offset;
             // First bit is not set, stop
-            if byte & signed_mask == Self::ZERO {
+            if byte & Self::VARINT_MASK == Self::ZERO {
                 break;
             }
-            offset += shift;
+            offset += Self::VARINT_SHIFT;
             i += 1;
         }
 
@@ -195,16 +234,23 @@ impl Integer<1, 2> for u8 {
     const ZERO: Self = 0;
 
     fn as_varint(&self) -> ([u8; 2], usize) {
-        varint_encode(*self)
+        UnsignedInteger::varint_encode(*self)
     }
 
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         UnsignedInteger::varint_decode(buffer)
     }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        (*self as i8 + other) as u8
+    }
 }
 
 impl UnsignedInteger<1, 2> for u8 {
     type SignedCounterpart = i8;
+    const VARINT_MASK: Self = !0x7f;
+    const VARINT_SHIFT: Self = 7;
 
     #[inline]
     fn zigzag_decode(&self) -> i8 {
@@ -216,16 +262,23 @@ impl Integer<2, 3> for u16 {
     const ZERO: Self = 0;
 
     fn as_varint(&self) -> ([u8; 3], usize) {
-        varint_encode(*self)
+        UnsignedInteger::varint_encode(*self)
     }
 
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         UnsignedInteger::varint_decode(buffer)
     }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        (*self as i16 + other as i16) as u16
+    }
 }
 
 impl UnsignedInteger<2, 3> for u16 {
     type SignedCounterpart = i16;
+    const VARINT_MASK: Self = !0x7f;
+    const VARINT_SHIFT: Self = 7;
 
     #[inline]
     fn zigzag_decode(&self) -> i16 {
@@ -237,16 +290,23 @@ impl Integer<4, 5> for u32 {
     const ZERO: Self = 0;
 
     fn as_varint(&self) -> ([u8; 5], usize) {
-        varint_encode(*self)
+        UnsignedInteger::varint_encode(*self)
     }
 
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         UnsignedInteger::varint_decode(buffer)
     }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        (*self as i32 + other as i32) as u32
+    }
 }
 
 impl UnsignedInteger<4, 5> for u32 {
     type SignedCounterpart = i32;
+    const VARINT_MASK: Self = !0x7f;
+    const VARINT_SHIFT: Self = 7;
 
     #[inline]
     fn zigzag_decode(&self) -> i32 {
@@ -258,16 +318,23 @@ impl Integer<8, 10> for u64 {
     const ZERO: Self = 0;
 
     fn as_varint(&self) -> ([u8; 10], usize) {
-        varint_encode(*self)
+        UnsignedInteger::varint_encode(*self)
     }
 
     fn varint_decode(buffer: &[u8]) -> (Self, usize) {
         UnsignedInteger::varint_decode(buffer)
     }
+
+    #[inline]
+    fn add_i8(&self, other: i8) -> Self {
+        (*self as i64 + other as i64) as u64
+    }
 }
 
 impl UnsignedInteger<8, 10> for u64 {
     type SignedCounterpart = i64;
+    const VARINT_MASK: Self = !0x7f;
+    const VARINT_SHIFT: Self = 7;
 
     #[inline]
     fn zigzag_decode(&self) -> i64 {
@@ -401,28 +468,7 @@ impl ByteRepr<8> for u64 {
     }
 }
 
-fn varint_encode<
-    const N: usize,
-    const MAX_ENCODED_SIZE: usize,
-    T: UnsignedInteger<N, MAX_ENCODED_SIZE>,
->(
-    value: T,
-) -> ([u8; MAX_ENCODED_SIZE], usize) {
-    let shift: T = From::from(7u8);
-    let mut result: [u8; MAX_ENCODED_SIZE] = [0; MAX_ENCODED_SIZE];
-    let mut i = 0;
-    let mut v = value;
-    // Scan all bytes of the value starting from least significant(LS):
-    // If sign bit of LS byte is not set, encoded varint value completed.
-    // Otherwise, write 7 bits of LS byte to the output and append
-    // continuation marker(one bit set to '1') and proceed to the next 7 bit.
-    loop {
-        result[i] = v.truncate_to_u8();
-        if result[i] & 0x80 == 0 {
-            break;
-        }
-        v >>= shift;
-        i += 1;
-    }
-    (result, i + 1)
+#[cfg(test)]
+mod tests {
+    // TODO: varint coding tests
 }

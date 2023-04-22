@@ -1,6 +1,5 @@
 use std::ops::{
     AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
-    SubAssign,
 };
 
 pub mod rle;
@@ -11,7 +10,6 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     + arrow::datatypes::ArrowNativeType
     + ByteRepr<TYPE_SIZE>
     + AddAssign
-    + SubAssign
     + ShrAssign
     + ShlAssign
     + Shl<Output = Self>
@@ -36,7 +34,7 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     /// Expected order of varint bytes is little endian.
     fn varint_decode(buffer: &[u8]) -> (Self, usize);
 
-    fn add_i8(&self, other: i8) -> Self;
+    fn overflow_add_i8(&self, other: i8) -> Self;
 }
 
 impl Integer<1, 2> for i8 {
@@ -54,8 +52,8 @@ impl Integer<1, 2> for i8 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
-        self + other
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        self.overflowing_add(other).0
     }
 }
 
@@ -74,8 +72,8 @@ impl Integer<2, 3> for i16 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
-        self + other as i16
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        self.overflowing_add(other as i16).0
     }
 }
 
@@ -94,8 +92,8 @@ impl Integer<4, 5> for i32 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
-        self + other as i32
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        self.overflowing_add(other as i32).0
     }
 }
 
@@ -114,8 +112,8 @@ impl Integer<8, 10> for i64 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
-        self + other as i64
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        self.overflowing_add(other as i64).0
     }
 }
 
@@ -246,7 +244,7 @@ impl Integer<1, 2> for u8 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
+    fn overflow_add_i8(&self, other: i8) -> Self {
         (*self as i8).overflowing_add(other).0 as u8
     }
 }
@@ -274,7 +272,7 @@ impl Integer<2, 3> for u16 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
+    fn overflow_add_i8(&self, other: i8) -> Self {
         (*self as i16).overflowing_add(other as i16).0 as u16
     }
 }
@@ -302,7 +300,7 @@ impl Integer<4, 5> for u32 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
+    fn overflow_add_i8(&self, other: i8) -> Self {
         (*self as i32).overflowing_add(other as i32).0 as u32
     }
 }
@@ -330,7 +328,7 @@ impl Integer<8, 10> for u64 {
     }
 
     #[inline]
-    fn add_i8(&self, other: i8) -> Self {
+    fn overflow_add_i8(&self, other: i8) -> Self {
         (*self as i64).overflowing_add(other as i64).0 as u64
     }
 }

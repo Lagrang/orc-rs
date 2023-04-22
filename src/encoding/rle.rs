@@ -269,7 +269,7 @@ where
                     remains -= 1;
                 }
                 for _ in 0..remains {
-                    next_value = next_value.add_i8(self.delta);
+                    next_value = next_value.overflow_add_i8(self.delta);
                     builder.put_slice(&next_value.to_le_bytes());
                 }
                 self.base_value = next_value;
@@ -711,11 +711,7 @@ mod tests {
 
             for _ in 0..length {
                 expected_data.put_slice(&base.to_le_bytes());
-                if delta <= 0 {
-                    base -= IntType::from_byte(delta.neg() as u8);
-                } else {
-                    base += IntType::from_byte(delta as u8);
-                }
+                base = base.overflow_add_i8(delta);
             }
         }
         (encoded_data.freeze(), expected_data.freeze())

@@ -257,6 +257,13 @@ where
                 let mut remains = count;
 
                 let mut next_value = self.base_value;
+                // If this is a start of new RLE run, write first value without adding the delta.
+                // This will handle the case when requested batch size is less than RLE run length.
+                // For instance, we have run: length=10, base/first value=1, delta=1.
+                // User requests 2 batches, each of size 5. First call will execute next branch and will
+                // write base/first value 1 and go to the usual case which will write another 4 values(2,3,4,5).
+                // After this call `self.base_value=5`. Second call will skip next block and will go directly
+                // to the standard case and will start from adding a delta which will produce 6,7,8,9,10.
                 if self.current_run.consumed() == 0 {
                     builder.put_slice(&next_value.to_le_bytes());
                     remains -= 1;
@@ -407,14 +414,19 @@ mod tests {
 
     #[test]
     fn i8_rle_v1_run() -> googletest::Result<()> {
-        let values: Vec<(u8, i8, i8)> = vec![
+        let values: Vec<(i8, i8, i8)> = vec![
             (3, 0, 1),
             (40, 10, -1),
-            ((i8::MAX / 2) as u8, i8::MAX / 2, 1),
-            (i8::MAX as u8, i8::MAX / 2, -1),
-            (i8::MAX as u8, i8::MAX, -1),
-            (i8::MAX as u8, i8::MIN, 1),
-            (i8::MAX as u8, -1, -1),
+            (64, -64, -1),
+            (64, -64, 1),
+            (64, 63, 1),
+            (127, 63, -1),
+            (127, 127, -1),
+            (127, -128, 1),
+            (127, -1, -1),
+            (127, 0, 1),
+            (127, 0, -1),
+            (127, -1, -1),
         ];
         let (source_data, expected_data) = prepare_int_rle_run_data(values);
         validate_int_rle::<1, 2, i8>(source_data, expected_data)
@@ -422,9 +434,32 @@ mod tests {
 
     #[test]
     fn i16_rle_v1_sequence() -> googletest::Result<()> {
-        // let values: Vec<i16> = vec![0, 10, 17408, 50176u16 as i16, i16::MAX, -1, i16::MIN];
-        let values: Vec<i16> = vec![17408];
+        let values: Vec<i16> = vec![0, 10, 17408, 50176u16 as i16, i16::MAX, -1, i16::MIN];
         let (source_data, expected_data) = prepare_int_rle_seq_data(values);
+        validate_int_rle::<2, 3, i16>(source_data, expected_data)
+    }
+
+    #[test]
+    fn i16_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, i16, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, -1),
+            (33, 5, 44),
+            (87, 8763, 115),
+            (127, -1, -1),
+            (127, 0, -1),
+            (64, i16::MIN / 2, 1),
+            (64, i16::MIN / 2, -1),
+            (64, i16::MAX / 2, 1),
+            (64, i16::MAX / 2, -1),
+            (i8::MAX, i16::MAX, -1),
+            (i8::MAX, i16::MIN, 1),
+            (i8::MAX, i16::MAX - i8::MAX as i16, 1),
+            (i8::MAX, i16::MIN + i8::MAX as i16, 1),
+            (33, i16::MAX - 33 * i8::MAX as i16, i8::MAX),
+            (33, i16::MIN - 33 * i8::MIN as i16, i8::MIN),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
         validate_int_rle::<2, 3, i16>(source_data, expected_data)
     }
 
@@ -444,6 +479,30 @@ mod tests {
     }
 
     #[test]
+    fn i32_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, i32, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, -1),
+            (33, 5, 44),
+            (87, 8763, 115),
+            (127, -1, -1),
+            (127, 0, -1),
+            (64, i32::MIN / 2, 1),
+            (64, i32::MIN / 2, -1),
+            (64, i32::MAX / 2, 1),
+            (64, i32::MAX / 2, -1),
+            (i8::MAX, i32::MAX, -1),
+            (i8::MAX, i32::MIN, 1),
+            (i8::MAX, i32::MAX - i8::MAX as i32, 1),
+            (i8::MAX, i32::MIN + i8::MAX as i32, 1),
+            (33, i32::MAX - 33 * i8::MAX as i32, i8::MAX),
+            (33, i32::MIN - 33 * i8::MIN as i32, i8::MIN),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
+        validate_int_rle::<4, 5, i32>(source_data, expected_data)
+    }
+
+    #[test]
     fn i64_rle_v1_sequence() -> googletest::Result<()> {
         let values: Vec<i64> = vec![
             0,
@@ -459,9 +518,46 @@ mod tests {
     }
 
     #[test]
+    fn i64_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, i64, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, -1),
+            (33, 5, 44),
+            (87, 8763, 115),
+            (127, -1, -1),
+            (127, 0, -1),
+            (64, i64::MIN / 2, 1),
+            (64, i64::MIN / 2, -1),
+            (64, i64::MAX / 2, 1),
+            (64, i64::MAX / 2, -1),
+            (i8::MAX, i64::MAX, -1),
+            (i8::MAX, i64::MIN, 1),
+            (i8::MAX, i64::MAX - i8::MAX as i64, 1),
+            (i8::MAX, i64::MIN + i8::MAX as i64, 1),
+            (33, i64::MAX - 33 * i8::MAX as i64, i8::MAX),
+            (33, i64::MIN - 33 * i8::MIN as i64, i8::MIN),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
+        validate_int_rle::<8, 10, i64>(source_data, expected_data)
+    }
+
+    #[test]
     fn u8_rle_v1_sequence() -> googletest::Result<()> {
         let values: Vec<u8> = vec![0, 1, 10, u8::MAX, u8::MIN];
         let (source_data, expected_data) = prepare_int_rle_seq_data(values);
+        validate_int_rle::<1, 2, u8>(source_data, expected_data)
+    }
+
+    #[test]
+    fn u8_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, u8, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, 1),
+            (64, 63, 1),
+            (127, 127, -1),
+            (127, 0, 1),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
         validate_int_rle::<1, 2, u8>(source_data, expected_data)
     }
 
@@ -473,9 +569,49 @@ mod tests {
     }
 
     #[test]
+    fn u16_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, u16, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, 1),
+            (33, 5, 44),
+            (87, 8763, 115),
+            (127, 0, 1),
+            (64, 0, 1),
+            (64, u16::MAX / 2, 1),
+            (64, u16::MAX / 2, -1),
+            (i8::MAX, u16::MAX, -1),
+            (i8::MAX, u16::MAX - i8::MAX as u16, 1),
+            (i8::MAX, u16::MIN + i8::MAX as u16, 1),
+            (33, u16::MAX - 33 * i8::MAX as u16, i8::MAX),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
+        validate_int_rle::<2, 3, u16>(source_data, expected_data)
+    }
+
+    #[test]
     fn u32_rle_v1_sequence() -> googletest::Result<()> {
         let values: Vec<u32> = vec![0, 10, 583008320, 2730491968, u32::MAX, u32::MIN];
         let (source_data, expected_data) = prepare_int_rle_seq_data(values);
+        validate_int_rle::<4, 5, u32>(source_data, expected_data)
+    }
+
+    #[test]
+    fn u32_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, u32, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, 1),
+            (33, 5, 44),
+            (87, 8763, 115),
+            (127, 0, 1),
+            (64, 0, 1),
+            (64, u32::MAX / 2, 1),
+            (64, u32::MAX / 2, -1),
+            (i8::MAX, u32::MAX, -1),
+            (i8::MAX, u32::MAX - i8::MAX as u32, 1),
+            (i8::MAX, u32::MIN + i8::MAX as u32, 1),
+            (33, u32::MAX - 33 * i8::MAX as u32, i8::MAX),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
         validate_int_rle::<4, 5, u32>(source_data, expected_data)
     }
 
@@ -490,6 +626,26 @@ mod tests {
             u64::MIN,
         ];
         let (source_data, expected_data) = prepare_int_rle_seq_data(values);
+        validate_int_rle::<8, 10, u64>(source_data, expected_data)
+    }
+
+    #[test]
+    fn u64_rle_v1_run() -> googletest::Result<()> {
+        let values: Vec<(i8, u64, i8)> = vec![
+            (3, 0, 1),
+            (40, 10, 1),
+            (33, 5, 44),
+            (87, 8763, 115),
+            (127, 0, 1),
+            (64, 0, 1),
+            (64, u64::MAX / 2, 1),
+            (64, u64::MAX / 2, -1),
+            (i8::MAX, u64::MAX, -1),
+            (i8::MAX, u64::MAX - i8::MAX as u64, 1),
+            (i8::MAX, u64::MIN + i8::MAX as u64, 1),
+            (33, u64::MAX - 33 * i8::MAX as u64, i8::MAX),
+        ];
+        let (source_data, expected_data) = prepare_int_rle_run_data(values);
         validate_int_rle::<8, 10, u64>(source_data, expected_data)
     }
 
@@ -538,28 +694,28 @@ mod tests {
 
     /// Prepare RLE run which consist of base value and delta.
     fn prepare_int_rle_run_data<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize, IntType>(
-        values: Vec<(u8, IntType, IntType)>,
+        values: Vec<(i8, IntType, i8)>,
     ) -> (Bytes, Bytes)
     where
         IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
     {
         let mut encoded_data = BytesMut::new();
         let mut expected_data = BytesMut::new();
-        assert!(values.len() <= 127);
         for (length, mut base, delta) in values {
             assert!(length >= 3);
-            assert!(delta >= IntType::from_byte(128.neg() as u8));
-            assert!(delta <= IntType::from_byte(127));
 
-            encoded_data.put_u8(length - 3);
+            encoded_data.put_i8(length - 3);
             encoded_data.put_slice(&delta.to_le_bytes());
             let (encoded, size) = base.as_varint();
             encoded_data.put_slice(&encoded[..size]);
 
-            expected_data.put_slice(&base.to_le_bytes());
-            for _ in 0..length - 1 {
-                base += delta;
+            for _ in 0..length {
                 expected_data.put_slice(&base.to_le_bytes());
+                if delta <= 0 {
+                    base -= IntType::from_byte(delta.neg() as u8);
+                } else {
+                    base += IntType::from_byte(delta as u8);
+                }
             }
         }
         (encoded_data.freeze(), expected_data.freeze())

@@ -1,5 +1,6 @@
 use std::ops::{
-    Add, AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
+    AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
+    SubAssign,
 };
 
 pub mod rle;
@@ -9,8 +10,8 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     Copy
     + arrow::datatypes::ArrowNativeType
     + ByteRepr<TYPE_SIZE>
-    + Add<Output = Self>
     + AddAssign
+    + SubAssign
     + ShrAssign
     + ShlAssign
     + Shl<Output = Self>
@@ -119,7 +120,7 @@ impl Integer<8, 10> for i64 {
 }
 
 pub(crate) trait SignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
-    Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + From<i8> + Neg<Output = Self>
+    Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + Neg<Output = Self>
 {
     /// Type represent unsigned counterpart of this type, e.g. i8 => u8.
     type UnsignedCounterpart;
@@ -167,7 +168,7 @@ impl SignedInteger<8, 10> for i64 {
 }
 
 pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
-    Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + From<u8>
+    Integer<TYPE_SIZE, MAX_ENCODED_SIZE>
 {
     /// Type represent unsigned counterpart of this type, e.g. u8 => i8.
     type SignedCounterpart;
@@ -188,8 +189,10 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
         // Otherwise, write 7 LS bits to the output and append
         // continuation marker(one bit set to '1') and proceed to the next 7 bit.
         loop {
+            // Optimistic case: always set sign bit to 1 before write to result.
             result[i] = (Self::VARINT_MASK | v).truncate_to_u8();
             if v & Self::VARINT_MASK == Self::ZERO {
+                // Set MS bit to 0 to rollback optimistic case.
                 result[i] &= !Self::VARINT_MASK.truncate_to_u8();
                 break;
             }
@@ -211,7 +214,8 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
         let mut i = 0;
         let mut offset: Self = Self::ZERO;
         loop {
-            let byte: Self = From::from(buffer[i]);
+            let byte: Self = Self::from_byte(buffer[i]);
+            // Set sign bit to zero and shift to right place.
             result |= (byte & !Self::VARINT_MASK) << offset;
             // First bit is not set, stop
             if byte & Self::VARINT_MASK == Self::ZERO {
@@ -243,7 +247,7 @@ impl Integer<1, 2> for u8 {
 
     #[inline]
     fn add_i8(&self, other: i8) -> Self {
-        (*self as i8 + other) as u8
+        (*self as i8).overflowing_add(other).0 as u8
     }
 }
 
@@ -271,7 +275,7 @@ impl Integer<2, 3> for u16 {
 
     #[inline]
     fn add_i8(&self, other: i8) -> Self {
-        (*self as i16 + other as i16) as u16
+        (*self as i16).overflowing_add(other as i16).0 as u16
     }
 }
 
@@ -299,7 +303,7 @@ impl Integer<4, 5> for u32 {
 
     #[inline]
     fn add_i8(&self, other: i8) -> Self {
-        (*self as i32 + other as i32) as u32
+        (*self as i32).overflowing_add(other as i32).0 as u32
     }
 }
 
@@ -327,7 +331,7 @@ impl Integer<8, 10> for u64 {
 
     #[inline]
     fn add_i8(&self, other: i8) -> Self {
-        (*self as i64 + other as i64) as u64
+        (*self as i64).overflowing_add(other as i64).0 as u64
     }
 }
 
@@ -374,7 +378,7 @@ impl ByteRepr<2> for i16 {
     }
 
     fn from_byte(value: u8) -> Self {
-        value as i16
+        value as i8 as i16
     }
 }
 
@@ -389,7 +393,7 @@ impl ByteRepr<4> for i32 {
     }
 
     fn from_byte(value: u8) -> Self {
-        value as i32
+        value as i8 as i32
     }
 }
 
@@ -404,7 +408,7 @@ impl ByteRepr<8> for i64 {
     }
 
     fn from_byte(value: u8) -> Self {
-        value as i64
+        value as i8 as i64
     }
 }
 

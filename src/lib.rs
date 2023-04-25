@@ -67,3 +67,9 @@ impl From<arrow::error::ArrowError> for OrcError {
         OrcError::General(e.to_string())
     }
 }
+
+impl From<chrono_tz::ParseError> for OrcError {
+    fn from(e: chrono_tz::ParseError) -> Self {
+        OrcError::General(format!("Timezone parsing failed: {}", e))
+    }
+}

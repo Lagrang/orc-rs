@@ -110,13 +110,13 @@ impl<'a> StripeReader<'a> {
         // footer.writer_timezone.map(|tz| );
 
         for column in self.out_schema.fields() {
-            self.col_readers.push(Box::new(column_reader::create_reader(
+            self.col_readers.push(column_reader::create_reader(
                 column,
                 self.orc_file,
                 &self.stripe_footer,
                 &self.stripe_meta,
                 self.compression,
-            )?));
+            )?);
         }
 
         Ok(())

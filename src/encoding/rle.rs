@@ -161,6 +161,66 @@ impl<Input: BufRead> ByteRleDecoder<Input> {
     }
 }
 
+pub(crate) struct BooleanRleDecoder<Input> {
+    rle: ByteRleDecoder<Input>,
+    completed: bool,
+}
+
+impl<Input: BufRead> BooleanRleDecoder<Input> {
+    pub fn new(file_reader: Input, buffer_size: usize) -> Self {
+        Self {
+            rle: ByteRleDecoder::new(file_reader, buffer_size),
+            completed: false,
+        }
+    }
+
+    pub fn read(
+        &mut self,
+        batch_size: usize,
+    ) -> crate::Result<Option<arrow::buffer::BooleanBuffer>> {
+        if self.completed {
+            return Ok(None);
+        }
+
+        if let Some(buf) = self.rle.read(batch_size)? {
+            let len = buf.len();
+            Ok(Some(arrow::buffer::BooleanBuffer::new(buf, 0, len * 8)))
+        } else {
+            self.completed = true;
+            Ok(None)
+        }
+    }
+}
+
+pub(crate) struct IntRleDecoder<Input, IntType> {
+    v1: Option<IntRleV1Decoder<Input, IntType>>,
+    v2: Option<IntRleV1Decoder<Input, IntType>>,
+}
+
+impl<Input, IntType> IntRleDecoder<Input, IntType> {
+    pub fn new_v1(v1: IntRleV1Decoder<Input, IntType>) -> Self {
+        Self {
+            v1: Some(v1),
+            v2: None,
+        }
+    }
+
+    pub fn read<const N: usize, const M: usize>(
+        &mut self,
+        batch_size: usize,
+    ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
+    where
+        IntType: Integer<N, M>,
+        Input: BufRead,
+    {
+        self.v1
+            .as_mut()
+            .or(self.v2.as_mut())
+            .unwrap()
+            .read(batch_size)
+    }
+}
+
 /// In Hive 0.11 ORC files used Run Length Encoding version 1 (RLEv1), which provides
 /// a lightweight compression of signed or unsigned integer sequences.
 ///
@@ -195,13 +255,11 @@ pub(crate) struct IntRleV1Decoder<Input, IntType> {
     base_value: IntType,
 }
 
-impl<Input, IntType> IntRleV1Decoder<Input, IntType>
-where
-    Input: BufRead,
-{
+impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
     pub fn new<const N: usize, const M: usize>(file_reader: Input, buffer_size: usize) -> Self
     where
         IntType: Integer<N, M>,
+        Input: BufRead,
     {
         let cap = cmp::max(buffer_size, 1);
         Self {
@@ -220,6 +278,7 @@ where
     ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
     where
         IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
+        Input: BufRead,
     {
         if self.completed {
             return Ok(None);
@@ -295,6 +354,7 @@ where
     fn read_next_block<const N: usize, const M: usize>(&mut self) -> crate::Result<bool>
     where
         IntType: Integer<N, M>,
+        Input: BufRead,
     {
         if self.buffer.is_empty() {
             let bytes_read = io_utils::BufRead::read(&mut self.file_reader, &mut self.buffer)?;

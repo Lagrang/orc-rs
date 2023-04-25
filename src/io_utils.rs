@@ -147,6 +147,7 @@ impl<T: SizedStream + ?Sized> SizedStream for Box<T> {
 
 /// Trait which provide implementation for the reading into [`bytes::BufMut`] and stream length.
 pub trait BufRead: Read {
+    /// Read data into buffer. Max read size determined by buffer capacity.
     fn read(&mut self, buffer: &mut dyn BufMut) -> std::io::Result<usize> {
         let mut byte_read = 0;
         loop {

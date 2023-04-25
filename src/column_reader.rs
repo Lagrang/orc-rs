@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::encoding::rle::{BooleanRleDecoder, IntRleDecoder, IntRleV1Decoder};
+use crate::encoding::rle::{BooleanRleDecoder, ByteRleDecoder, IntRleDecoder, IntRleV1Decoder};
 use crate::encoding::Integer;
 use crate::io_utils::{self};
 use crate::source::OrcFile;
@@ -48,11 +48,7 @@ pub(crate) fn create_reader<'a>(
             buffer_size,
         ))),
         DataType::Int8 => Ok(Box::new(GenericReader::new(
-            Int8Reader::new(
-                data_stream,
-                buffer_size,
-                footer.columns[col_id as usize].clone(),
-            ),
+            Int8Reader::new(data_stream, buffer_size),
             null_stream,
             buffer_size,
         ))),
@@ -261,9 +257,9 @@ where
 }
 
 pub(crate) struct Int8Reader<Input> {
-    rle: IntRleDecoder<Input, i8>,
+    rle: ByteRleDecoder<Input>,
     /// Data chunk buffer. Contain values which are not a NULL.
-    data_chunk: Option<arrow::buffer::ScalarBuffer<i8>>,
+    data_chunk: Option<arrow::buffer::Buffer>,
     /// Builder for a data array which will be returned to the user.
     array_builder: arrow::array::Int8Builder,
 }
@@ -272,9 +268,9 @@ impl<DataStream> Int8Reader<DataStream>
 where
     DataStream: io_utils::BufRead,
 {
-    fn new(data_stream: DataStream, buffer_size: usize, encoding: proto::ColumnEncoding) -> Self {
+    fn new(data_stream: DataStream, buffer_size: usize) -> Self {
         Self {
-            rle: create_int_rle(data_stream, buffer_size, encoding),
+            rle: ByteRleDecoder::new(data_stream, buffer_size),
             data_chunk: None,
             array_builder: arrow::array::Int8Builder::new(),
         }
@@ -293,7 +289,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int8Reader<DataStream> {
 
     fn append_value(&mut self, index: usize) {
         let data = self.data_chunk.as_ref().unwrap();
-        let col_val = data[index];
+        let col_val = data[index] as i8;
         self.array_builder.append_value(col_val);
     }
 

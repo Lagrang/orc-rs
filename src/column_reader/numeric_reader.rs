@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::encoding::rle::{ByteRleDecoder, IntRleDecoder};
-use crate::{io_utils, proto};
+use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};
 
@@ -28,11 +28,11 @@ where
 
 impl<DataStream: io_utils::BufRead> ColumnProcessor for Int8Reader<DataStream> {
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
-        if let Some(buffer) = self.rle.read(num_values)? {
-            self.data_chunk = Some(buffer);
-        } else {
-            self.data_chunk = None;
-        }
+        self.data_chunk = Some(
+            self.rle
+                .read(num_values)?
+                .ok_or(OrcError::MalformedPresentOrDataStream)?,
+        );
         Ok(())
     }
 
@@ -76,11 +76,11 @@ where
 
 impl<DataStream: io_utils::BufRead> ColumnProcessor for Int16Reader<DataStream> {
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
-        if let Some(buffer) = self.rle.read(num_values)? {
-            self.data_chunk = Some(buffer);
-        } else {
-            self.data_chunk = None;
-        }
+        self.data_chunk = Some(
+            self.rle
+                .read(num_values)?
+                .ok_or(OrcError::MalformedPresentOrDataStream)?,
+        );
         Ok(())
     }
 
@@ -126,11 +126,11 @@ where
 
 impl<DataStream: io_utils::BufRead> ColumnProcessor for Int32Reader<DataStream> {
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
-        if let Some(buffer) = self.rle.read(num_values)? {
-            self.data_chunk = Some(buffer);
-        } else {
-            self.data_chunk = None;
-        }
+        self.data_chunk = Some(
+            self.rle
+                .read(num_values)?
+                .ok_or(OrcError::MalformedPresentOrDataStream)?,
+        );
         Ok(())
     }
 
@@ -174,11 +174,11 @@ where
 
 impl<DataStream: io_utils::BufRead> ColumnProcessor for Int64Reader<DataStream> {
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
-        if let Some(buffer) = self.rle.read(num_values)? {
-            self.data_chunk = Some(buffer);
-        } else {
-            self.data_chunk = None;
-        }
+        self.data_chunk = Some(
+            self.rle
+                .read(num_values)?
+                .ok_or(OrcError::MalformedPresentOrDataStream)?,
+        );
         Ok(())
     }
 

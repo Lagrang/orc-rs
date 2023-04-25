@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::encoding::rle::BooleanRleDecoder;
-use crate::io_utils;
+use crate::{io_utils, OrcError};
 
 use super::ColumnProcessor;
 
@@ -28,11 +28,11 @@ impl<'a, DataStream: io_utils::BufRead + 'a> BooleanReader<DataStream> {
 
 impl<DataStream: io_utils::BufRead> ColumnProcessor for BooleanReader<DataStream> {
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
-        if let Some(buffer) = self.rle.read(num_values)? {
-            self.data_chunk = Some(buffer);
-        } else {
-            self.data_chunk = None;
-        }
+        self.data_chunk = Some(
+            self.rle
+                .read(num_values)?
+                .ok_or(OrcError::MalformedPresentOrDataStream)?,
+        );
         Ok(())
     }
 

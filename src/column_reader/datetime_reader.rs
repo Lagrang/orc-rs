@@ -4,7 +4,7 @@ use chrono::TimeZone;
 
 use crate::encoding::rle::IntRleDecoder;
 use crate::io_utils::{self};
-use crate::proto;
+use crate::{proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};
 
@@ -25,7 +25,7 @@ where
         seconds_stream: DataStream,
         nanos_stream: DataStream,
         buffer_size: usize,
-        encoding: proto::ColumnEncoding,
+        encoding: &proto::ColumnEncoding,
     ) -> Self {
         Self {
             // Each timestamp in ORC file stored as number of seconds since 2015-01-01
@@ -33,8 +33,8 @@ where
                 .with_ymd_and_hms(2015, 1, 1, 0, 0, 0)
                 .unwrap()
                 - chrono_tz::UTC.timestamp_opt(0, 0).unwrap(),
-            seconds_rle: create_int_rle(seconds_stream, buffer_size, &encoding),
-            nanos_rle: create_int_rle(nanos_stream, buffer_size, &encoding),
+            seconds_rle: create_int_rle(seconds_stream, buffer_size, encoding),
+            nanos_rle: create_int_rle(nanos_stream, buffer_size, encoding),
             seconds_chunk: None,
             nanos_chunk: None,
             result_builder: arrow::array::TimestampNanosecondBuilder::new(),
@@ -72,6 +72,54 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for TimestampReader<DataStre
         let ts = seconds * 10i64.pow(9) + nanos as i64;
         self.result_builder
             .append_value(self.time_offset.num_nanoseconds().unwrap() + ts);
+    }
+
+    fn append_null(&mut self) {
+        self.result_builder.append_null();
+    }
+
+    fn complete(&mut self) -> arrow::array::ArrayRef {
+        Arc::new(self.result_builder.finish())
+    }
+}
+
+pub struct DateReader<Input> {
+    rle: IntRleDecoder<Input, i64>,
+    data_chunk: Option<arrow::buffer::ScalarBuffer<i64>>,
+    result_builder: arrow::array::Date64Builder,
+}
+
+impl<DataStream> DateReader<DataStream>
+where
+    DataStream: io_utils::BufRead,
+{
+    pub fn new(
+        data_stream: DataStream,
+        buffer_size: usize,
+        encoding: &proto::ColumnEncoding,
+    ) -> Self {
+        Self {
+            rle: create_int_rle(data_stream, buffer_size, encoding),
+            data_chunk: None,
+            result_builder: arrow::array::Date64Builder::new(),
+        }
+    }
+}
+
+impl<DataStream: io_utils::BufRead> ColumnProcessor for DateReader<DataStream> {
+    fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
+        self.data_chunk = Some(
+            self.rle
+                .read(num_values)?
+                .ok_or(OrcError::MalformedPresentOrDataStream)?,
+        );
+        Ok(())
+    }
+
+    fn append_value(&mut self, index: usize) {
+        let data = self.data_chunk.as_ref().unwrap();
+        let col_val = data[index];
+        self.result_builder.append_value(col_val);
     }
 
     fn append_null(&mut self) {

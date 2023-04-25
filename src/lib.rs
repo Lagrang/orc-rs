@@ -48,6 +48,8 @@ pub enum OrcError {
         Stripe footer: {0:?}, stripe info: {1:?}"
     )]
     ColumnLenNotEqual(proto::StripeInformation, proto::StripeFooter),
+    #[error("Column PRESENT and DATA stream contains different number of rows.")]
+    MalformedPresentOrDataStream,
 }
 
 impl From<std::io::Error> for OrcError {

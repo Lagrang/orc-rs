@@ -1,6 +1,7 @@
+mod binary_reader;
 mod boolean_reader;
 mod datetime_reader;
-mod numeric_readers;
+mod numeric_reader;
 
 use crate::encoding::rle::{BooleanRleDecoder, IntRleDecoder, IntRleV1Decoder};
 use crate::encoding::Integer;
@@ -10,9 +11,12 @@ use crate::{compression, proto, schema, OrcError, Result};
 
 use arrow::datatypes::DataType;
 
+use self::binary_reader::{BinaryReader, StringReader};
 use self::boolean_reader::BooleanReader;
-use self::datetime_reader::TimestampReader;
-use self::numeric_readers::{Int16Reader, Int32Reader, Int64Reader, Int8Reader};
+use self::datetime_reader::{DateReader, TimestampReader};
+use self::numeric_reader::{
+    Float32Reader, Float64Reader, Int16Reader, Int32Reader, Int64Reader, Int8Reader,
+};
 
 pub trait ColumnReader {
     /// Read next chunk of column values.
@@ -85,10 +89,25 @@ pub(crate) fn create_reader<'a>(
             null_stream,
             buffer_size,
         ))),
+        DataType::Float32 => Ok(Box::new(GenericReader::new(
+            Float32Reader::new(data_stream),
+            null_stream,
+            buffer_size,
+        ))),
+        DataType::Float64 => Ok(Box::new(GenericReader::new(
+            Float64Reader::new(data_stream),
+            null_stream,
+            buffer_size,
+        ))),
+        DataType::Date64 => Ok(Box::new(GenericReader::new(
+            DateReader::new(data_stream, buffer_size, &footer.columns[col_id as usize]),
+            null_stream,
+            buffer_size,
+        ))),
         DataType::Timestamp(_, _) => {
             let nanos_stream = open_stream_reader(
                 col_id,
-                proto::stream::Kind::Data,
+                proto::stream::Kind::Secondary,
                 footer,
                 stripe_meta,
                 orc_file,
@@ -99,7 +118,47 @@ pub(crate) fn create_reader<'a>(
                     data_stream,
                     nanos_stream,
                     buffer_size,
-                    footer.columns[col_id as usize].clone(),
+                    &footer.columns[col_id as usize],
+                ),
+                null_stream,
+                buffer_size,
+            )))
+        }
+        DataType::Binary => {
+            let len_stream = open_stream_reader(
+                col_id,
+                proto::stream::Kind::Length,
+                footer,
+                stripe_meta,
+                orc_file,
+                compression,
+            )?;
+            Ok(Box::new(GenericReader::new(
+                BinaryReader::new(
+                    data_stream,
+                    len_stream,
+                    buffer_size,
+                    &footer.columns[col_id as usize],
+                ),
+                null_stream,
+                buffer_size,
+            )))
+        }
+        DataType::Utf8 => {
+            let len_stream = open_stream_reader(
+                col_id,
+                proto::stream::Kind::Length,
+                footer,
+                stripe_meta,
+                orc_file,
+                compression,
+            )?;
+            Ok(Box::new(GenericReader::new(
+                StringReader::new(
+                    data_stream,
+                    len_stream,
+                    buffer_size,
+                    &footer.columns[col_id as usize],
                 ),
                 null_stream,
                 buffer_size,
@@ -130,6 +189,7 @@ fn open_stream_reader<'a>(
     Err(OrcError::InvalidStreamKind(stream_kind, col_id))
 }
 
+// TODO: replace all method by 1 which will take NULL bitmap and return Arrow array
 trait ColumnProcessor {
     /// Read next chunk of data stream and stores it for the later use.
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()>;
@@ -183,10 +243,14 @@ impl<NullStream: io_utils::BufRead, Processor: ColumnProcessor> ColumnReader
             // Decode more data for NULL and data stream
             if let Some(buffer) = self.null_stream.read(num_values)? {
                 self.remaining = buffer.len();
+                let non_null_count = buffer.count_set_bits();
                 self.nulls_chunk = Some(buffer);
                 self.data_index = 0;
-                // Data buffer read can return empty buffer if only NULLs values remain in a column
-                self.type_reader.load_chunk(num_values)?;
+                // Data stream doesn't store placeholders for NULL values,
+                // request to read rows equals count of not NULL values.
+                if non_null_count != 0 {
+                    self.type_reader.load_chunk(non_null_count)?;
+                }
             } else {
                 return Ok(None);
             }

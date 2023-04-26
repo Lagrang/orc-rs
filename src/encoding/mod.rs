@@ -2,15 +2,13 @@ use std::ops::{
     AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
 };
 
-use crate::OrcError;
-
 pub mod rle;
 
 /// Marker trait for signed integer types.
 pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     Copy
-    + arrow::datatypes::ArrowNativeType
     + ByteRepr<TYPE_SIZE>
+    + PartialEq
     + AddAssign
     + ShrAssign
     + ShlAssign
@@ -343,6 +341,34 @@ impl Integer<8, 10> for u64 {
     }
 }
 
+impl UnsignedInteger<16, 19> for u128 {
+    type SignedCounterpart = i128;
+    const VARINT_MASK: Self = !0x7f;
+    const VARINT_SHIFT: Self = 7;
+
+    #[inline]
+    fn zigzag_decode(&self) -> i128 {
+        (*self >> 1) as i128 ^ ((*self & 1) as i128).neg()
+    }
+}
+
+impl Integer<16, 19> for u128 {
+    const ZERO: Self = 0;
+
+    fn as_varint(&self) -> ([u8; 19], usize) {
+        UnsignedInteger::varint_encode(*self)
+    }
+
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i128).overflowing_add(other as i128).0 as u128
+    }
+}
+
 impl UnsignedInteger<8, 10> for u64 {
     type SignedCounterpart = i64;
     const VARINT_MASK: Self = !0x7f;
@@ -477,6 +503,21 @@ impl ByteRepr<8> for u64 {
 
     fn from_byte(value: u8) -> Self {
         value as u64
+    }
+}
+
+impl ByteRepr<16> for u128 {
+    #[inline]
+    fn to_le_bytes(&self) -> [u8; 16] {
+        u128::to_le_bytes(*self)
+    }
+
+    fn truncate_to_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    fn from_byte(value: u8) -> Self {
+        value as u128
     }
 }
 

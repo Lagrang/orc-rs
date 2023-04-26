@@ -15,7 +15,8 @@ use self::binary_reader::{BinaryReader, StringDictionaryReader, StringReader};
 use self::boolean_reader::BooleanReader;
 use self::datetime_reader::{DateReader, TimestampReader};
 use self::numeric_reader::{
-    Float32Reader, Float64Reader, Int16Reader, Int32Reader, Int64Reader, Int8Reader,
+    Decimal128Reader, Float32Reader, Float64Reader, Int16Reader, Int32Reader, Int64Reader,
+    Int8Reader,
 };
 
 pub trait ColumnReader {
@@ -99,6 +100,29 @@ pub(crate) fn create_reader<'a>(
             null_stream,
             buffer_size,
         ))),
+        DataType::Decimal128(precision, scale) => {
+            let scale_stream = open_stream_reader(
+                col_id,
+                proto::stream::Kind::Secondary,
+                footer,
+                stripe_meta,
+                orc_file,
+                compression,
+            )?;
+            let decimal_reader = Decimal128Reader::new(
+                *precision,
+                *scale as u8,
+                data_stream,
+                scale_stream,
+                buffer_size,
+                &footer.columns[col_id as usize],
+            );
+            Ok(Box::new(GenericReader::new(
+                decimal_reader,
+                null_stream,
+                buffer_size,
+            )))
+        }
         DataType::Date64 => Ok(Box::new(GenericReader::new(
             DateReader::new(data_stream, buffer_size, &footer.columns[col_id as usize]),
             null_stream,
@@ -222,7 +246,7 @@ trait ColumnProcessor {
     /// Signal to chunk reader to read value at index from data chunk(read by [`load_data_chunk`])
     /// and append it as next element into internal buffer which,
     /// at the end of the day, will be returned to user.
-    fn append_value(&mut self, index: usize);
+    fn append_value(&mut self, index: usize) -> crate::Result<()>;
     /// Append NULL as next value into internal buffer.
     fn append_null(&mut self);
     /// Complete processing of current chunk and returns an Arrow array
@@ -291,7 +315,7 @@ impl<NullStream: io_utils::BufRead, Processor: ColumnProcessor> ColumnReader
         for _ in 0..std::cmp::min(num_values, self.remaining) {
             // Check if the next value NULL or not.
             if null_bitmap.value(null_bitmap.len() - self.remaining) {
-                self.type_reader.append_value(self.data_index);
+                self.type_reader.append_value(self.data_index)?;
                 self.data_index += 1;
             } else {
                 self.type_reader.append_null();
@@ -311,7 +335,7 @@ fn create_int_rle<const N: usize, const M: usize, Input, IntType>(
 ) -> IntRleDecoder<Input, IntType>
 where
     IntType: Integer<N, M>,
-    Input: io_utils::BufRead,
+    Input: std::io::Read,
 {
     match encoding.kind() {
         proto::column_encoding::Kind::Direct | proto::column_encoding::Kind::Dictionary => {

@@ -1,5 +1,4 @@
 use std::io::Read;
-use std::num;
 use std::sync::Arc;
 
 use crate::encoding::rle::IntRleDecoder;
@@ -52,9 +51,10 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         self.result_builder.append_value(&self.buffers[index]);
         self.buffers[index].clear();
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -115,9 +115,10 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         self.result_builder.append_value(&self.strings[index]);
         self.strings[index].clear();
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -188,11 +189,12 @@ impl<RleStream: io_utils::BufRead> ColumnProcessor for StringDictionaryReader<Rl
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         // FIXME: blind access by index can cause panics if ORC file is corrupted.
         let value_index = self.buffer[index] as usize;
         let value = self.dict_values.value(value_index);
         self.result_builder.append_value(value);
+        Ok(())
     }
 
     fn append_null(&mut self) {

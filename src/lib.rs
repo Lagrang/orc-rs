@@ -48,12 +48,14 @@ pub enum OrcError {
         Stripe footer: {0:?}, stripe info: {1:?}"
     )]
     ColumnLenNotEqual(proto::StripeInformation, proto::StripeFooter),
-    #[error("Column PRESENT and DATA stream contains different number of rows.")]
+    #[error("Column PRESENT and DATA stream contains different number of rows")]
     MalformedPresentOrDataStream,
-    #[error("Dictionary size is not equal to LENGTH stream size.")]
+    #[error("Dictionary size is not equal to LENGTH stream size")]
     MalformedDictionaryLengthStream,
-    #[error("Column type {0:?} is not supported.")]
+    #[error("Column type {0:?} is not supported")]
     TypeNotSupported(arrow::datatypes::DataType),
+    #[error("Column has decimal scale {0}, but actual value has scale {1}. (Value scale - column scale) <= {2}")]
+    InvalidDecimalScale(u8, u8, u8),
 }
 
 impl From<std::io::Error> for OrcError {

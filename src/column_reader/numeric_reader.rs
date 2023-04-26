@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::encoding::rle::{ByteRleDecoder, IntRleDecoder};
+use crate::encoding::UnsignedInteger;
 use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};
@@ -36,10 +37,11 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int8Reader<DataStream> {
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let data = self.data_chunk.as_ref().unwrap();
         let col_val = data[index] as i8;
         self.result_builder.append_value(col_val);
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -84,10 +86,11 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int16Reader<DataStream> 
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let data = self.data_chunk.as_ref().unwrap();
         let col_val = data[index];
         self.result_builder.append_value(col_val);
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -134,10 +137,11 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int32Reader<DataStream> 
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let data = self.data_chunk.as_ref().unwrap();
         let col_val = data[index];
         self.result_builder.append_value(col_val);
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -182,10 +186,11 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int64Reader<DataStream> 
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let data = self.data_chunk.as_ref().unwrap();
         let col_val = data[index];
         self.result_builder.append_value(col_val);
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -225,13 +230,14 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Float32Reader<DataStream
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let mut float_bytes = [0u8; 4];
         let len = float_bytes.len();
         let start_pos = index * len;
         float_bytes.copy_from_slice(&self.data_chunk[start_pos..start_pos + len]);
         self.result_builder
             .append_value(f32::from_le_bytes(float_bytes));
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -271,13 +277,14 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Float64Reader<DataStream
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let mut float_bytes = [0u8; 8];
         let len = float_bytes.len();
         let start_pos = index * len;
         float_bytes.copy_from_slice(&self.data_chunk[start_pos..start_pos + len]);
         self.array_builder
             .append_value(f64::from_le_bytes(float_bytes));
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -286,5 +293,85 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Float64Reader<DataStream
 
     fn complete(&mut self) -> arrow::array::ArrayRef {
         Arc::new(self.array_builder.finish())
+    }
+}
+
+pub struct Decimal128Reader<Input> {
+    precision: u8,
+    scale: u8,
+    data_stream: std::io::BufReader<Input>,
+    // Scale RLE is signed
+    scale_rle: IntRleDecoder<Input, i8>,
+    scale_chunk: arrow::buffer::ScalarBuffer<i8>,
+    result_builder: arrow::array::Decimal128Builder,
+}
+
+impl<DataStream> Decimal128Reader<DataStream>
+where
+    DataStream: std::io::Read,
+{
+    pub fn new(
+        precision: u8,
+        scale: u8,
+        data_stream: DataStream,
+        scale_stream: DataStream,
+        buffer_size: usize,
+        encoding: &proto::ColumnEncoding,
+    ) -> Self {
+        Self {
+            precision,
+            scale,
+            data_stream: std::io::BufReader::with_capacity(buffer_size, data_stream),
+            scale_rle: create_int_rle(scale_stream, buffer_size, encoding),
+            scale_chunk: arrow::buffer::ScalarBuffer::from(Vec::new()),
+            result_builder: arrow::array::Decimal128Builder::new(),
+        }
+    }
+}
+
+impl<DataStream: io_utils::BufRead> ColumnProcessor for Decimal128Reader<DataStream> {
+    fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
+        self.scale_chunk = self
+            .scale_rle
+            .read(num_values)?
+            .ok_or(OrcError::MalformedPresentOrDataStream)?;
+
+        Ok(())
+    }
+
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
+        let mut value = u128::varint_decode(&mut self.data_stream)?
+            .0
+            .zigzag_decode();
+
+        // Fix scaling, ported from C++ Decimal64ColumnReader.
+        let val_scale = self.scale_chunk[index] as u8;
+        let signed = self.scale as i32 - val_scale as i32;
+        let scale_fix = signed.unsigned_abs();
+        // const DECIMAL64_MAX_PRECISION: u8 = 18;
+        // if scale_fix <= DECIMAL64_MAX_PRECISION as u32 && scale_fix != 0 {
+        //     return Err(OrcError::InvalidDecimalScale(
+        //         self.scale,
+        //         val_scale,
+        //         DECIMAL64_MAX_PRECISION,
+        //     ));
+        // }
+
+        if signed > 0 {
+            value *= 1i128.pow(scale_fix);
+        } else {
+            value /= 1i128.pow(scale_fix);
+        }
+
+        self.result_builder.append_value(value);
+        Ok(())
+    }
+
+    fn append_null(&mut self) {
+        self.result_builder.append_null();
+    }
+
+    fn complete(&mut self) -> arrow::array::ArrayRef {
+        Arc::new(self.result_builder.finish())
     }
 }

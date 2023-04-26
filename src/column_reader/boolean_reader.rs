@@ -36,10 +36,11 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for BooleanReader<DataStream
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let data = self.data_chunk.as_ref().unwrap();
         let col_val = data.value(index);
         self.array_builder.append_value(col_val);
+        Ok(())
     }
 
     fn append_null(&mut self) {

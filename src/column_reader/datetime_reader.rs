@@ -49,7 +49,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for TimestampReader<DataStre
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let mut seconds = self.seconds_chunk.as_ref().unwrap()[index];
         let mut nanos = self.nanos_chunk.as_ref().unwrap()[index];
         // 3 LS bits stores count of decimal zeros which are truncated from the actual value.
@@ -72,6 +72,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for TimestampReader<DataStre
         let ts = seconds * 10i64.pow(9) + nanos as i64;
         self.result_builder
             .append_value(self.time_offset.num_nanoseconds().unwrap() + ts);
+        Ok(())
     }
 
     fn append_null(&mut self) {
@@ -116,10 +117,11 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for DateReader<DataStream> {
         Ok(())
     }
 
-    fn append_value(&mut self, index: usize) {
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
         let data = self.data_chunk.as_ref().unwrap();
         let col_val = data[index];
         self.result_builder.append_value(col_val);
+        Ok(())
     }
 
     fn append_null(&mut self) {

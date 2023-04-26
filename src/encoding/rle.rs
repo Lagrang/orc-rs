@@ -206,7 +206,7 @@ impl<Input, IntType> IntRleDecoder<Input, IntType> {
         batch_size: usize,
     ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
     where
-        IntType: Integer<N, M>,
+        IntType: Integer<N, M> + arrow::datatypes::ArrowNativeType,
         Input: std::io::Read,
     {
         self.v1
@@ -275,7 +275,7 @@ impl<Input: std::io::Read, IntType> IntRleV1Decoder<Input, IntType> {
         batch_size: usize,
     ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
     where
-        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
+        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + arrow::datatypes::ArrowNativeType,
     {
         if self.completed {
             return Ok(None);
@@ -686,7 +686,7 @@ mod tests {
         expected_data: Bytes,
     ) -> googletest::Result<()>
     where
-        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
+        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + arrow::datatypes::ArrowNativeType,
     {
         let reader = MemoryReader::from(encoded_data);
         let mut rle: IntRleV1Decoder<MemoryReader, IntType> =

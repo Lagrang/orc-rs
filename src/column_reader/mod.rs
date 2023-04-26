@@ -11,7 +11,7 @@ use crate::{compression, proto, schema, OrcError, Result};
 
 use arrow::datatypes::DataType;
 
-use self::binary_reader::{BinaryReader, StringReader};
+use self::binary_reader::{BinaryReader, StringDictionaryReader, StringReader};
 use self::boolean_reader::BooleanReader;
 use self::datetime_reader::{DateReader, TimestampReader};
 use self::numeric_reader::{
@@ -153,18 +153,44 @@ pub(crate) fn create_reader<'a>(
                 orc_file,
                 compression,
             )?;
-            Ok(Box::new(GenericReader::new(
-                StringReader::new(
-                    data_stream,
-                    len_stream,
+
+            if footer.columns[col_id as usize].kind() == proto::column_encoding::Kind::Dictionary
+                || footer.columns[col_id as usize].kind()
+                    == proto::column_encoding::Kind::DictionaryV2
+            {
+                let dict_data_stream = open_stream_reader(
+                    col_id,
+                    proto::stream::Kind::DictionaryData,
+                    footer,
+                    stripe_meta,
+                    orc_file,
+                    compression,
+                )?;
+                Ok(Box::new(GenericReader::new(
+                    StringDictionaryReader::new(
+                        data_stream,
+                        dict_data_stream,
+                        len_stream,
+                        buffer_size,
+                        &footer.columns[col_id as usize],
+                    )?,
+                    null_stream,
                     buffer_size,
-                    &footer.columns[col_id as usize],
-                ),
-                null_stream,
-                buffer_size,
-            )))
+                )))
+            } else {
+                Ok(Box::new(GenericReader::new(
+                    StringReader::new(
+                        data_stream,
+                        len_stream,
+                        buffer_size,
+                        &footer.columns[col_id as usize],
+                    ),
+                    null_stream,
+                    buffer_size,
+                )))
+            }
         }
-        _ => panic!(""),
+        _ => Err(OrcError::TypeNotSupported(column.data_type().clone())),
     }
 }
 

@@ -52,6 +52,8 @@ pub enum OrcError {
     MalformedPresentOrDataStream,
     #[error("Dictionary size is not equal to LENGTH stream size.")]
     MalformedDictionaryLengthStream,
+    #[error("Column type {0:?} is not supported.")]
+    TypeNotSupported(arrow::datatypes::DataType),
 }
 
 impl From<std::io::Error> for OrcError {

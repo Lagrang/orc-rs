@@ -1,9 +1,9 @@
 use std::cmp;
-use std::ops::Neg;
+use std::io::Read;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 
-use crate::io_utils::{self, BufRead};
+use crate::OrcError;
 
 use super::Integer;
 
@@ -13,7 +13,7 @@ struct RunState {
     // Index of next value in 'plain' sequence to return
     consumed: usize,
     /// Indicates that current block is not RLE encoded, but contains plain values.
-    is_plain: bool,
+    is_plain_sequence: bool,
 }
 
 impl RunState {
@@ -21,7 +21,7 @@ impl RunState {
         Self {
             length: 0,
             consumed: 0,
-            is_plain: false,
+            is_plain_sequence: false,
         }
     }
 
@@ -37,7 +37,7 @@ impl RunState {
         Self {
             length: len,
             consumed: 0,
-            is_plain: header < 0,
+            is_plain_sequence: header < 0,
         }
     }
 
@@ -71,22 +71,23 @@ impl RunState {
 /// of the minimal run (3) and the control byte for literal lists is the negative length of the list.
 /// For example, a hundred 0’s is encoded as [0x61, 0x00] and the sequence 0x44, 0x45 would be encoded as [0xfe, 0x44, 0x45].
 pub struct ByteRleDecoder<Input> {
-    file_reader: Input,
+    file_reader: std::io::BufReader<Input>,
     completed: bool,
-    // Block of data read from file but not processed yet
-    buffer: BytesMut,
     // State of current run
     current_run: RunState,
+    // Used only if current run is not a sequence of literals.
+    // This is single value of RLE repeated N times.
+    run_value: u8,
 }
 
-impl<Input: BufRead> ByteRleDecoder<Input> {
+impl<Input: std::io::Read> ByteRleDecoder<Input> {
     pub fn new(file_reader: Input, buffer_size: usize) -> Self {
         let cap = cmp::max(buffer_size, 1);
         Self {
-            file_reader,
+            file_reader: std::io::BufReader::with_capacity(cap, file_reader),
             completed: false,
-            buffer: BytesMut::with_capacity(cap),
             current_run: RunState::empty(),
+            run_value: 0,
         }
     }
 
@@ -99,35 +100,31 @@ impl<Input: BufRead> ByteRleDecoder<Input> {
         let mut remaining_values = batch_size;
         while remaining_values > 0 {
             // Current RLE run completed or buffer with values exhausted.
-            if (!self.current_run.has_values() || self.buffer.is_empty())
-                && !self.read_next_block()?
-            {
+            if !self.current_run.has_values() && !self.read_next_block()? {
                 // No more data to decode
                 self.completed = true;
                 break;
             }
 
-            let count = if self.current_run.is_plain {
+            let values_to_read = cmp::min(self.current_run.remaining(), remaining_values);
+            let values_read = if self.current_run.is_plain_sequence {
                 // Copy values(sequence of different values) from buffer
-                let count = cmp::min(
-                    cmp::min(self.current_run.remaining(), remaining_values),
-                    self.buffer.remaining(),
-                );
-                builder.extend_from_slice(&self.buffer[..count]);
-                self.buffer.advance(count);
+                builder.reserve_exact(values_to_read);
+                let bytes_written = builder.len();
+                #[allow(clippy::uninit_vec)]
+                unsafe {
+                    builder.set_len(bytes_written + values_to_read)
+                };
+                let count = self.file_reader.read(&mut builder[bytes_written..])?;
+                unsafe { builder.set_len(bytes_written + count) };
                 count
             } else {
-                let count = cmp::min(self.current_run.remaining(), remaining_values);
-                builder.put_bytes(self.buffer[0], count);
-                count
+                builder.put_bytes(self.run_value, values_to_read);
+                values_to_read
             };
 
-            remaining_values -= count;
-            self.current_run.increment_consumed(count);
-            if !self.current_run.has_values() && !self.current_run.is_plain {
-                // RLE run with repeated values is completed, skip byte with run value.
-                self.buffer.advance(1);
-            }
+            remaining_values -= values_read;
+            self.current_run.increment_consumed(values_read);
         }
 
         if !builder.is_empty() {
@@ -138,23 +135,22 @@ impl<Input: BufRead> ByteRleDecoder<Input> {
     }
 
     fn read_next_block(&mut self) -> crate::Result<bool> {
-        if self.buffer.is_empty() {
-            let bytes_read = io_utils::BufRead::read(&mut self.file_reader, &mut self.buffer)?;
-            if bytes_read == 0 {
-                if self.current_run.has_values() {
-                    return Err(crate::OrcError::MalformedRleBlock);
-                } else {
-                    return Ok(false);
-                }
-            }
+        // First byte of block contains the RLE header.
+        let mut byte_buf = [0u8; 1];
+        let count = self.file_reader.read(&mut byte_buf)?;
+        if count == 0 {
+            return Ok(false);
         }
+        let header = byte_buf[0] as i8;
+        self.current_run = RunState::from_header(header);
 
-        // Start new RLE run
-        if !self.current_run.has_values() {
-            // First byte of block contains the RLE header.
-            let header = i8::from_le_bytes([self.buffer[0]; 1]);
-            self.buffer.advance(1);
-            self.current_run = RunState::from_header(header);
+        // Read repeated value of run if this is not a 'plain sequence of literals'.
+        if !self.current_run.is_plain_sequence {
+            let count = self.file_reader.read(&mut byte_buf)?;
+            if count == 0 {
+                return Err(OrcError::MalformedRleBlock);
+            }
+            self.run_value = byte_buf[0];
         }
 
         Ok(true)
@@ -166,7 +162,7 @@ pub(crate) struct BooleanRleDecoder<Input> {
     completed: bool,
 }
 
-impl<Input: BufRead> BooleanRleDecoder<Input> {
+impl<Input: std::io::Read> BooleanRleDecoder<Input> {
     pub fn new(file_reader: Input, buffer_size: usize) -> Self {
         Self {
             rle: ByteRleDecoder::new(file_reader, buffer_size),
@@ -211,7 +207,7 @@ impl<Input, IntType> IntRleDecoder<Input, IntType> {
     ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
     where
         IntType: Integer<N, M>,
-        Input: BufRead,
+        Input: std::io::Read,
     {
         self.v1
             .as_mut()
@@ -242,10 +238,8 @@ impl<Input, IntType> IntRleDecoder<Input, IntType> {
 /// Thus, if there are no runs, the overhead is 1 byte for each 128 integers.
 /// Numbers [2, 3, 6, 7, 11] would be encoded as [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb].
 pub(crate) struct IntRleV1Decoder<Input, IntType> {
-    file_reader: Input,
+    file_reader: std::io::BufReader<Input>,
     completed: bool,
-    // Block of data read from file but not processed yet.
-    buffer: BytesMut,
     // State of current run.
     current_run: RunState,
     // Delta value for the current RLE run. This is second byte in run, right after the header.
@@ -255,17 +249,21 @@ pub(crate) struct IntRleV1Decoder<Input, IntType> {
     base_value: IntType,
 }
 
-impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
-    pub fn new<const N: usize, const M: usize>(file_reader: Input, buffer_size: usize) -> Self
+impl<Input: std::io::Read, IntType> IntRleV1Decoder<Input, IntType> {
+    pub fn new<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>(
+        file_reader: Input,
+        buffer_size: usize,
+    ) -> Self
     where
-        IntType: Integer<N, M>,
-        Input: BufRead,
+        IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
     {
-        let cap = cmp::max(buffer_size, 1);
+        let cap = cmp::max(
+            buffer_size,
+            1 /* header */ + 1 /* delta */ + MAX_ENCODED_SIZE,
+        );
         Self {
-            file_reader,
+            file_reader: std::io::BufReader::with_capacity(cap, file_reader),
             completed: false,
-            buffer: BytesMut::with_capacity(cap),
             current_run: RunState::empty(),
             delta: 0,
             base_value: IntType::ZERO,
@@ -278,13 +276,12 @@ impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
     ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
     where
         IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
-        Input: BufRead,
     {
         if self.completed {
             return Ok(None);
         }
 
-        let mut decoded_count = 0;
+        let mut result_buffer_length = 0;
         let mut builder = BytesMut::with_capacity(batch_size * TYPE_SIZE);
         let mut remaining_values = batch_size;
         while remaining_values > 0 {
@@ -295,20 +292,13 @@ impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
                 break;
             }
 
-            let count = if self.current_run.is_plain {
+            let count = if self.current_run.is_plain_sequence {
                 // Take sequence of different varint values from buffer.
-                let count = cmp::min(
-                    cmp::min(self.current_run.remaining(), remaining_values),
-                    self.buffer.remaining(),
-                );
-                let mut bytes_read = 0;
+                let count = cmp::min(self.current_run.remaining(), remaining_values);
                 for _ in 0..count {
-                    let (val, bytes): (IntType, usize) =
-                        IntType::varint_decode(&self.buffer[bytes_read..]);
-                    bytes_read += bytes;
+                    let (val, _) = IntType::varint_decode(&mut self.file_reader)?;
                     builder.put_slice(&val.to_le_bytes());
                 }
-                self.buffer.advance(bytes_read);
                 count
             } else {
                 // Values are based on delta and base value
@@ -336,7 +326,7 @@ impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
             };
 
             remaining_values -= count;
-            decoded_count += count;
+            result_buffer_length += count;
             self.current_run.increment_consumed(count);
         }
 
@@ -344,7 +334,7 @@ impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
             Ok(Some(arrow::buffer::ScalarBuffer::new(
                 arrow::buffer::Buffer::from_vec(builder.to_vec()),
                 0,
-                decoded_count,
+                result_buffer_length,
             )))
         } else {
             Ok(None)
@@ -354,49 +344,25 @@ impl<Input, IntType> IntRleV1Decoder<Input, IntType> {
     fn read_next_block<const N: usize, const M: usize>(&mut self) -> crate::Result<bool>
     where
         IntType: Integer<N, M>,
-        Input: BufRead,
     {
-        if self.buffer.is_empty() {
-            let bytes_read = io_utils::BufRead::read(&mut self.file_reader, &mut self.buffer)?;
-            if bytes_read == 0 {
-                if self.current_run.has_values() {
-                    return Err(crate::OrcError::MalformedRleBlock);
-                } else {
-                    return Ok(false);
-                }
-            }
+        // First byte of block contains the RLE header.
+        let mut byte_buf = [0u8; 1];
+        let count = self.file_reader.read(&mut byte_buf)?;
+        if count == 0 {
+            return Ok(false);
         }
+        let header = byte_buf[0] as i8;
+        self.current_run = RunState::from_header(header);
 
-        // Start new RLE run
-        if !self.current_run.has_values() {
-            // First byte of block contains the RLE header.
-            let header = self.buffer[0] as i8;
-            self.buffer.advance(1);
-            self.current_run = RunState::from_header(header);
-
+        if !self.current_run.is_plain_sequence {
             // Decode delta and base value of RLE run.
-            if !self.current_run.is_plain {
-                // Need more data in buffer to read 'delta' value and base value of run.
-                if self.buffer.is_empty() {
-                    let bytes_read =
-                        io_utils::BufRead::read(&mut self.file_reader, &mut self.buffer)?;
-                    // We need one more value in RLE run
-                    if bytes_read == 0 {
-                        if self.current_run.has_values() {
-                            return Err(crate::OrcError::MalformedRleBlock);
-                        } else {
-                            return Ok(false);
-                        }
-                    }
-                }
-
-                self.delta = self.buffer[0] as i8;
-                // Skip 1 header byte and try to decode base value of run
-                let (value, bytes_read) = IntType::varint_decode(&self.buffer[1..]);
-                // Add the delta to base value here to produce first value of run without branches.
-                self.base_value = value;
-                self.buffer.advance(bytes_read + 1);
+            let count = self.file_reader.read(&mut byte_buf)?;
+            if count == 0 {
+                return Err(OrcError::MalformedRleBlock);
             }
+            self.delta = byte_buf[0] as i8;
+            let (value, _) = IntType::varint_decode(&mut self.file_reader)?;
+            self.base_value = value;
         }
 
         Ok(true)
@@ -416,7 +382,8 @@ mod tests {
 
     use super::{ByteRleDecoder, IntRleV1Decoder};
 
-    const BUFFER_SIZE: usize = 4 * 1024;
+    // Set buffer size to min value to test how RLE will behave when minimal data is in memory.
+    const BUFFER_SIZE: usize = 1;
 
     // TODO: add property based tests
 
@@ -427,24 +394,29 @@ mod tests {
         source_data.put_u8(15);
         source_data.put_u8(1);
         expected_data.put_bytes(1, 18);
+
         // Test max sized for repeated values.
         source_data.put_u8(127);
         source_data.put_u8(2);
         expected_data.put_bytes(2, 130);
+
         // Test min sized for repeated values.
         source_data.put_u8(1);
         source_data.put_u8(3);
         expected_data.put_bytes(3, 4);
+
         // Test sequence of different values.
         source_data.put_u8(-34i8 as u8);
         source_data.put_bytes(1, 34);
         expected_data.put_bytes(1, 34);
+
         // Test max size for a sequence of different values.
         source_data.put_u8(-128i8 as u8);
         for i in 0..128 {
             source_data.put_u8(i);
             expected_data.put_u8(i);
         }
+
         // Test min size for a sequence of different values.
         source_data.put_u8(-1i8 as u8);
         source_data.put_u8(5);

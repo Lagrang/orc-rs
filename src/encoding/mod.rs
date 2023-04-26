@@ -2,6 +2,8 @@ use std::ops::{
     AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
 };
 
+use crate::OrcError;
+
 pub mod rle;
 
 /// Marker trait for signed integer types.
@@ -32,7 +34,7 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     /// Decode 'base 128 varint' value.
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
     /// Expected order of varint bytes is little endian.
-    fn varint_decode(buffer: &[u8]) -> (Self, usize);
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)>;
 
     fn overflow_add_i8(&self, other: i8) -> Self;
 }
@@ -46,9 +48,9 @@ impl Integer<1, 2> for i8 {
     }
 
     #[inline]
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        let (decoded, size): (u8, usize) = UnsignedInteger::varint_decode(buffer);
-        (decoded.zigzag_decode(), size)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        let (decoded, size): (u8, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
+        Ok((decoded.zigzag_decode(), size))
     }
 
     #[inline]
@@ -66,9 +68,9 @@ impl Integer<2, 3> for i16 {
     }
 
     #[inline]
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        let (decoded, size): (u16, usize) = UnsignedInteger::varint_decode(buffer);
-        (decoded.zigzag_decode(), size)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        let (decoded, size): (u16, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
+        Ok((decoded.zigzag_decode(), size))
     }
 
     #[inline]
@@ -86,9 +88,9 @@ impl Integer<4, 5> for i32 {
     }
 
     #[inline]
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        let (decoded, size): (u32, usize) = UnsignedInteger::varint_decode(buffer);
-        (decoded.zigzag_decode(), size)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        let (decoded, size): (u32, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
+        Ok((decoded.zigzag_decode(), size))
     }
 
     #[inline]
@@ -106,9 +108,9 @@ impl Integer<8, 10> for i64 {
     }
 
     #[inline]
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        let (decoded, size): (u64, usize) = UnsignedInteger::varint_decode(buffer);
-        (decoded.zigzag_decode(), size)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        let (decoded, size): (u64, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
+        Ok((decoded.zigzag_decode(), size))
     }
 
     #[inline]
@@ -207,12 +209,20 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
     /// Examples:
     /// - 128 => [0x80, 0x01]
     /// - 16383 => [0xff, 0x7f]
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
         let mut result = Self::ZERO;
         let mut i = 0;
         let mut offset: Self = Self::ZERO;
+        let mut byte_buf = [0; 1];
         loop {
-            let byte: Self = Self::from_byte(buffer[i]);
+            let count = encoded_stream.read(&mut byte_buf)?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Malformed encoded varint value",
+                ));
+            }
+            let byte: Self = Self::from_byte(byte_buf[0]);
             // Set sign bit to zero and shift to right place.
             result |= (byte & !Self::VARINT_MASK) << offset;
             // First bit is not set, stop
@@ -223,7 +233,7 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
             i += 1;
         }
 
-        (result, i + 1)
+        Ok((result, i + 1))
     }
 
     /// Decode using Zigzag algorithm.
@@ -239,8 +249,8 @@ impl Integer<1, 2> for u8 {
         UnsignedInteger::varint_encode(*self)
     }
 
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        UnsignedInteger::varint_decode(buffer)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
     }
 
     #[inline]
@@ -267,8 +277,8 @@ impl Integer<2, 3> for u16 {
         UnsignedInteger::varint_encode(*self)
     }
 
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        UnsignedInteger::varint_decode(buffer)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
     }
 
     #[inline]
@@ -295,8 +305,8 @@ impl Integer<4, 5> for u32 {
         UnsignedInteger::varint_encode(*self)
     }
 
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        UnsignedInteger::varint_decode(buffer)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
     }
 
     #[inline]
@@ -323,8 +333,8 @@ impl Integer<8, 10> for u64 {
         UnsignedInteger::varint_encode(*self)
     }
 
-    fn varint_decode(buffer: &[u8]) -> (Self, usize) {
-        UnsignedInteger::varint_decode(buffer)
+    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
     }
 
     #[inline]

@@ -1,5 +1,6 @@
 mod binary_reader;
 mod boolean_reader;
+mod complex_type_reader;
 mod datetime_reader;
 mod numeric_reader;
 
@@ -13,6 +14,7 @@ use arrow::datatypes::DataType;
 
 use self::binary_reader::{BinaryReader, StringDictionaryReader, StringReader};
 use self::boolean_reader::BooleanReader;
+use self::complex_type_reader::StructReader;
 use self::datetime_reader::{DateReader, TimestampReader};
 use self::numeric_reader::{
     Decimal128Reader, Float32Reader, Float64Reader, Int16Reader, Int32Reader, Int64Reader,
@@ -28,7 +30,7 @@ pub trait ColumnReader {
 
 pub(crate) fn create_reader<'a>(
     column: &arrow::datatypes::Field,
-    orc_file: &'a dyn OrcFile,
+    orc_file: &dyn OrcFile,
     footer: &proto::StripeFooter,
     stripe_meta: &proto::StripeInformation,
     compression: &'a compression::Compression,
@@ -213,6 +215,20 @@ pub(crate) fn create_reader<'a>(
                     buffer_size,
                 )))
             }
+        }
+        DataType::Struct(fields) => {
+            let mut child_readers: Vec<Box<dyn ColumnReader + 'a>> =
+                Vec::with_capacity(fields.len());
+            for f in fields {
+                let reader: Box<dyn ColumnReader + 'a> =
+                    create_reader(f, orc_file, footer, stripe_meta, compression)?;
+                child_readers.push(reader);
+            }
+            Ok(Box::new(GenericReader::new(
+                StructReader::new(fields.clone(), child_readers, footer, stripe_meta),
+                null_stream,
+                buffer_size,
+            )))
         }
         _ => Err(OrcError::TypeNotSupported(column.data_type().clone())),
     }

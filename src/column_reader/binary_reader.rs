@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::num;
 use std::sync::Arc;
 
 use crate::encoding::rle::IntRleDecoder;
@@ -66,7 +67,7 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
 }
 
 pub struct StringReader<RleInput, Input> {
-    length_rle: IntRleDecoder<RleInput, i64>,
+    length_rle: IntRleDecoder<RleInput, u64>,
     data: std::io::BufReader<Input>,
     strings: Vec<String>,
     result_builder: arrow::array::StringBuilder,
@@ -117,6 +118,81 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
     fn append_value(&mut self, index: usize) {
         self.result_builder.append_value(&self.strings[index]);
         self.strings[index].clear();
+    }
+
+    fn append_null(&mut self) {
+        self.result_builder.append_null();
+    }
+
+    fn complete(&mut self) -> arrow::array::ArrayRef {
+        Arc::new(self.result_builder.finish())
+    }
+}
+
+pub struct StringDictionaryReader<RleInput> {
+    dict_rle: IntRleDecoder<RleInput, u32>,
+    buffer: arrow::buffer::ScalarBuffer<u32>,
+    dict_values: arrow::array::StringArray,
+    result_builder: arrow::array::StringDictionaryBuilder<arrow::datatypes::UInt32Type>,
+}
+
+impl<RleStream> StringDictionaryReader<RleStream>
+where
+    RleStream: io_utils::BufRead,
+{
+    pub fn new<DataStream: std::io::Read>(
+        dict_idx_stream: RleStream,
+        dict_data_stream: DataStream,
+        length_stream: RleStream,
+        buffer_size: usize,
+        encoding: &proto::ColumnEncoding,
+    ) -> crate::Result<Self> {
+        let dict_size = encoding.dictionary_size() as usize;
+        let mut len_rle: IntRleDecoder<RleStream, u32> =
+            create_int_rle(length_stream, buffer_size, encoding);
+        let sizes = len_rle
+            .read(dict_size)?
+            .ok_or(OrcError::MalformedDictionaryLengthStream)?;
+
+        if dict_size != sizes.len() {
+            return Err(OrcError::MalformedDictionaryLengthStream);
+        }
+
+        let mut dict_values = Vec::with_capacity(dict_size);
+        let mut dict_data_stream = std::io::BufReader::with_capacity(buffer_size, dict_data_stream);
+        for size in &sizes {
+            let mut buffer = Vec::with_capacity(*size as usize);
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                buffer.set_len(buffer.capacity())
+            };
+            dict_data_stream.read_exact(&mut buffer)?;
+            dict_values.push(unsafe { String::from_utf8_unchecked(buffer) });
+        }
+
+        Ok(Self {
+            dict_rle: create_int_rle(dict_idx_stream, buffer_size, encoding),
+            buffer: arrow::buffer::ScalarBuffer::from(Vec::new()),
+            dict_values: arrow::array::StringArray::from(dict_values),
+            result_builder: arrow::array::StringDictionaryBuilder::new(),
+        })
+    }
+}
+
+impl<RleStream: io_utils::BufRead> ColumnProcessor for StringDictionaryReader<RleStream> {
+    fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
+        self.buffer = self
+            .dict_rle
+            .read(num_values)?
+            .ok_or(OrcError::MalformedPresentOrDataStream)?;
+        Ok(())
+    }
+
+    fn append_value(&mut self, index: usize) {
+        // FIXME: blind access by index can cause panics if ORC file is corrupted.
+        let value_index = self.buffer[index] as usize;
+        let value = self.dict_values.value(value_index);
+        self.result_builder.append_value(value);
     }
 
     fn append_null(&mut self) {

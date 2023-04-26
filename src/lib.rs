@@ -50,6 +50,8 @@ pub enum OrcError {
     ColumnLenNotEqual(proto::StripeInformation, proto::StripeFooter),
     #[error("Column PRESENT and DATA stream contains different number of rows.")]
     MalformedPresentOrDataStream,
+    #[error("Dictionary size is not equal to LENGTH stream size.")]
+    MalformedDictionaryLengthStream,
 }
 
 impl From<std::io::Error> for OrcError {

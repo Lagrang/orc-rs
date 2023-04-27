@@ -14,7 +14,7 @@ use arrow::datatypes::DataType;
 
 use self::binary_reader::{BinaryReader, StringDictionaryReader, StringReader};
 use self::boolean_reader::BooleanReader;
-use self::complex_type_reader::StructReader;
+use self::complex_type_reader::{ListReader, StructReader};
 use self::datetime_reader::{DateReader, TimestampReader};
 use self::numeric_reader::{
     Decimal128Reader, Float32Reader, Float64Reader, Int16Reader, Int32Reader, Int64Reader,
@@ -34,6 +34,7 @@ pub(crate) fn create_reader<'a>(
     footer: &proto::StripeFooter,
     stripe_meta: &proto::StripeInformation,
     compression: &'a compression::Compression,
+    buffer_size: usize,
 ) -> crate::Result<Box<dyn ColumnReader + 'a>> {
     let col_id = schema::get_column_id(column)?;
     let null_stream = open_stream_reader(
@@ -52,8 +53,8 @@ pub(crate) fn create_reader<'a>(
         orc_file,
         compression,
     )?;
+    let col_encoding = &footer.columns[col_id as usize];
 
-    let buffer_size = 4 * 1024;
     match column.data_type() {
         DataType::Boolean => Ok(Box::new(GenericReader::new(
             BooleanReader::new(data_stream),
@@ -66,29 +67,17 @@ pub(crate) fn create_reader<'a>(
             buffer_size,
         ))),
         DataType::Int16 => Ok(Box::new(GenericReader::new(
-            Int16Reader::new(
-                data_stream,
-                buffer_size,
-                footer.columns[col_id as usize].clone(),
-            ),
+            Int16Reader::new(data_stream, buffer_size, col_encoding.clone()),
             null_stream,
             buffer_size,
         ))),
         DataType::Int32 => Ok(Box::new(GenericReader::new(
-            Int32Reader::new(
-                data_stream,
-                buffer_size,
-                footer.columns[col_id as usize].clone(),
-            ),
+            Int32Reader::new(data_stream, buffer_size, col_encoding.clone()),
             null_stream,
             buffer_size,
         ))),
         DataType::Int64 => Ok(Box::new(GenericReader::new(
-            Int64Reader::new(
-                data_stream,
-                buffer_size,
-                footer.columns[col_id as usize].clone(),
-            ),
+            Int64Reader::new(data_stream, buffer_size, col_encoding.clone()),
             null_stream,
             buffer_size,
         ))),
@@ -117,7 +106,7 @@ pub(crate) fn create_reader<'a>(
                 data_stream,
                 scale_stream,
                 buffer_size,
-                &footer.columns[col_id as usize],
+                col_encoding,
             );
             Ok(Box::new(GenericReader::new(
                 decimal_reader,
@@ -126,7 +115,7 @@ pub(crate) fn create_reader<'a>(
             )))
         }
         DataType::Date64 => Ok(Box::new(GenericReader::new(
-            DateReader::new(data_stream, buffer_size, &footer.columns[col_id as usize]),
+            DateReader::new(data_stream, buffer_size, col_encoding),
             null_stream,
             buffer_size,
         ))),
@@ -140,12 +129,7 @@ pub(crate) fn create_reader<'a>(
                 compression,
             )?;
             Ok(Box::new(GenericReader::new(
-                TimestampReader::new(
-                    data_stream,
-                    nanos_stream,
-                    buffer_size,
-                    &footer.columns[col_id as usize],
-                ),
+                TimestampReader::new(data_stream, nanos_stream, buffer_size, col_encoding),
                 null_stream,
                 buffer_size,
             )))
@@ -160,12 +144,7 @@ pub(crate) fn create_reader<'a>(
                 compression,
             )?;
             Ok(Box::new(GenericReader::new(
-                BinaryReader::new(
-                    data_stream,
-                    len_stream,
-                    buffer_size,
-                    &footer.columns[col_id as usize],
-                ),
+                BinaryReader::new(data_stream, len_stream, buffer_size, col_encoding),
                 null_stream,
                 buffer_size,
             )))
@@ -180,9 +159,8 @@ pub(crate) fn create_reader<'a>(
                 compression,
             )?;
 
-            if footer.columns[col_id as usize].kind() == proto::column_encoding::Kind::Dictionary
-                || footer.columns[col_id as usize].kind()
-                    == proto::column_encoding::Kind::DictionaryV2
+            if col_encoding.kind() == proto::column_encoding::Kind::Dictionary
+                || col_encoding.kind() == proto::column_encoding::Kind::DictionaryV2
             {
                 let dict_data_stream = open_stream_reader(
                     col_id,
@@ -198,19 +176,14 @@ pub(crate) fn create_reader<'a>(
                         dict_data_stream,
                         len_stream,
                         buffer_size,
-                        &footer.columns[col_id as usize],
+                        col_encoding,
                     )?,
                     null_stream,
                     buffer_size,
                 )))
             } else {
                 Ok(Box::new(GenericReader::new(
-                    StringReader::new(
-                        data_stream,
-                        len_stream,
-                        buffer_size,
-                        &footer.columns[col_id as usize],
-                    ),
+                    StringReader::new(data_stream, len_stream, buffer_size, col_encoding),
                     null_stream,
                     buffer_size,
                 )))
@@ -221,11 +194,40 @@ pub(crate) fn create_reader<'a>(
                 Vec::with_capacity(fields.len());
             for f in fields {
                 let reader: Box<dyn ColumnReader + 'a> =
-                    create_reader(f, orc_file, footer, stripe_meta, compression)?;
+                    create_reader(f, orc_file, footer, stripe_meta, compression, buffer_size)?;
                 child_readers.push(reader);
             }
             Ok(Box::new(GenericReader::new(
                 StructReader::new(fields.clone(), child_readers, footer, stripe_meta),
+                null_stream,
+                buffer_size,
+            )))
+        }
+        dt @ DataType::List(field) => {
+            let child_reader: Box<dyn ColumnReader + 'a> = create_reader(
+                field,
+                orc_file,
+                footer,
+                stripe_meta,
+                compression,
+                buffer_size,
+            )?;
+            let len_stream = open_stream_reader(
+                col_id,
+                proto::stream::Kind::Length,
+                footer,
+                stripe_meta,
+                orc_file,
+                compression,
+            )?;
+            Ok(Box::new(GenericReader::new(
+                ListReader::new(
+                    dt.clone(),
+                    child_reader,
+                    len_stream,
+                    buffer_size,
+                    col_encoding,
+                ),
                 null_stream,
                 buffer_size,
             )))

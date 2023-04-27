@@ -11,10 +11,20 @@ use crate::{proto, OrcError};
 use bytes::Bytes;
 use prost::Message;
 
-#[derive(Default)]
 pub struct ReaderOptions {
     pub compression_codecs: CompressionRegistry,
+    /// Size of buffers which will be used during column decodings.
+    pub buffer_size: usize,
     //TODO: add custom allocator support, pub allocator: &'a dyn std::alloc::Allocator,
+}
+
+impl Default for ReaderOptions {
+    fn default() -> Self {
+        Self {
+            compression_codecs: Default::default(),
+            buffer_size: 4 * 1024,
+        }
+    }
 }
 
 /// Creates new ORC file reader.
@@ -67,6 +77,7 @@ struct ReaderImpl {
     stripe_stats: Option<Vec<proto::StripeStatistics>>,
     orc_file: Box<dyn OrcFile>,
     compression: compression::Compression,
+    buffer_size: usize,
 }
 
 impl ReaderImpl {
@@ -86,6 +97,7 @@ impl ReaderImpl {
             stripe_stats: metadata.map(|m| m.stripe_stats),
             orc_file,
             compression,
+            buffer_size: opts.buffer_size,
         })
     }
 }
@@ -159,6 +171,7 @@ impl Reader for ReaderImpl {
             self.tail.schema.clone(),
             self.orc_file.as_ref(),
             &self.compression,
+            self.buffer_size,
         ))
     }
 }

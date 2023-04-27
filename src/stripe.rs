@@ -26,6 +26,7 @@ pub struct StripeReader<'a> {
     // Schema for record batch returned by this reader. Used to filter out unnecessary columns.
     out_schema: arrow::datatypes::SchemaRef,
     col_readers: Vec<Box<dyn column_reader::ColumnReader + 'a>>,
+    buffer_size: usize,
 }
 
 impl<'a> StripeReader<'a> {
@@ -34,6 +35,7 @@ impl<'a> StripeReader<'a> {
         file_schema: arrow::datatypes::SchemaRef,
         orc_file: &'a dyn OrcFile,
         reader_factory: &'a compression::Compression,
+        buffer_size: usize,
     ) -> Self {
         StripeReader {
             orc_file,
@@ -44,6 +46,7 @@ impl<'a> StripeReader<'a> {
             indexes: None,
             out_schema: file_schema.clone(),
             col_readers: Vec::with_capacity(file_schema.fields().len()),
+            buffer_size,
         }
     }
 
@@ -116,6 +119,7 @@ impl<'a> StripeReader<'a> {
                 &self.stripe_footer,
                 &self.stripe_meta,
                 self.compression,
+                self.buffer_size,
             )?);
         }
 

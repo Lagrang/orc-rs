@@ -208,7 +208,7 @@ impl<RleStream: io_utils::BufRead> ColumnProcessor for StringDictionaryReader<Rl
             .dict_rle
             .read(num_values)?
             .ok_or(OrcError::MalformedPresentOrDataStream)?;
-        self.result_builder= Some(arrow::array::StringDictionaryBuilder::new();
+        self.result_builder = Some(arrow::array::StringDictionaryBuilder::new());
         Ok(())
     }
 

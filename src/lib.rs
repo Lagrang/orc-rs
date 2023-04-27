@@ -54,8 +54,12 @@ pub enum OrcError {
     MalformedDictionaryLengthStream,
     #[error("Column type {0:?} is not supported")]
     TypeNotSupported(arrow::datatypes::DataType),
-    #[error("Column has decimal scale {0}, but actual value has scale {1}. (Value scale - column scale) <= {2}")]
-    InvalidDecimalScale(u8, u8, u8),
+    #[error("ORC union with more than 127 subtypes is not supported")]
+    UnsupportedOrcUnionSubtypes,
+    #[error("ORC union malformed: data for the union subtypes is corrupted or missed")]
+    MalformedUnion,
+    #[error("Decimal(precision={0},scale={}) is not supported")]
+    UnsupportedDecimalType(u32, u32),
 }
 
 impl From<std::io::Error> for OrcError {

@@ -7,6 +7,7 @@ mod numeric_reader;
 use crate::encoding::rle::{BooleanRleDecoder, IntRleDecoder, IntRleV1Decoder};
 use crate::encoding::Integer;
 use crate::io_utils::{self};
+use crate::schema::OrcColumnId;
 use crate::source::OrcFile;
 use crate::{compression, proto, schema, OrcError, Result};
 
@@ -36,7 +37,7 @@ pub(crate) fn create_reader<'a>(
     compression: &'a compression::Compression,
     buffer_size: usize,
 ) -> crate::Result<Box<dyn ColumnReader + 'a>> {
-    let col_id = schema::get_column_id(column)?;
+    let col_id = column.orc_column_id()?;
     let null_stream = open_stream_reader(
         col_id,
         proto::stream::Kind::Present,
@@ -57,7 +58,7 @@ pub(crate) fn create_reader<'a>(
 
     match column.data_type() {
         DataType::Boolean => Ok(Box::new(GenericReader::new(
-            BooleanReader::new(data_stream),
+            BooleanReader::new(data_stream, buffer_size),
             null_stream,
             buffer_size,
         ))),
@@ -232,6 +233,35 @@ pub(crate) fn create_reader<'a>(
                 buffer_size,
             )))
         }
+        DataType::Map(field, _) => {
+            let child_reader: Box<dyn ColumnReader + 'a> = create_reader(
+                field,
+                orc_file,
+                footer,
+                stripe_meta,
+                compression,
+                buffer_size,
+            )?;
+            let len_stream = open_stream_reader(
+                col_id,
+                proto::stream::Kind::Length,
+                footer,
+                stripe_meta,
+                orc_file,
+                compression,
+            )?;
+            Ok(Box::new(GenericReader::new(
+                ListReader::new(
+                    DataType::List(field.clone()),
+                    child_reader,
+                    len_stream,
+                    buffer_size,
+                    col_encoding,
+                ),
+                null_stream,
+                buffer_size,
+            )))
+        }
         _ => Err(OrcError::TypeNotSupported(column.data_type().clone())),
     }
 }
@@ -266,10 +296,10 @@ trait ColumnProcessor {
     /// at the end of the day, will be returned to user.
     fn append_value(&mut self, index: usize) -> crate::Result<()>;
     /// Append NULL as next value into internal buffer.
-    fn append_null(&mut self);
+    fn append_null(&mut self) -> crate::Result<()>;
     /// Complete processing of current chunk and returns an Arrow array
     /// with column values(belong to the current chunk).
-    fn complete(&mut self) -> arrow::array::ArrayRef;
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef>;
 }
 
 /// Base column reader handles reading of present(NULL) stream and provide facilities
@@ -336,12 +366,12 @@ impl<NullStream: io_utils::BufRead, Processor: ColumnProcessor> ColumnReader
                 self.type_reader.append_value(self.data_index)?;
                 self.data_index += 1;
             } else {
-                self.type_reader.append_null();
+                self.type_reader.append_null()?;
             }
             self.remaining -= 1;
         }
 
-        let array = self.type_reader.complete();
+        let array = self.type_reader.complete()?;
         Ok(Some(array))
     }
 }

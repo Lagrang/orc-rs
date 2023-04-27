@@ -12,7 +12,7 @@ const COLUMN_ID: &str = "column_id";
 pub(crate) fn read_schema(
     types: &Vec<proto::Type>,
     col_stats: &Vec<proto::ColumnStatistics>,
-) -> Result<datatypes::Schema> {
+) -> crate::Result<datatypes::Schema> {
     validate_proto_schema(types)?;
 
     // read root struct with all columns
@@ -28,7 +28,7 @@ fn read_field<N: Into<String>>(
     depth: usize,
     column_index: usize,
     col_stats: &Vec<proto::ColumnStatistics>,
-) -> Result<(Vec<datatypes::Field>, usize)> {
+) -> crate::Result<(Vec<datatypes::Field>, usize)> {
     let col_type = &types[type_idx];
     let stats = &col_stats[column_index];
     let name = name.into();
@@ -145,6 +145,10 @@ fn read_field<N: Into<String>>(
         proto::r#type::Kind::Union => {
             has_children(col_type, &name)?;
 
+            if col_type.subtypes.len() > 127 {
+                return Err(OrcError::UnsupportedOrcUnionSubtypes);
+            }
+
             let mut subfields = Vec::with_capacity(col_type.subtypes.len());
             let mut next_type_id = type_idx + subfields.len() + 1;
             for (i, subtype_index) in col_type.subtypes.iter().enumerate() {
@@ -160,6 +164,8 @@ fn read_field<N: Into<String>>(
                 debug_assert_eq!(subfield.len(), 1);
                 subfields.push(subfield.pop().expect("Union field type missed"));
             }
+
+            debug_assert_eq!(col_type.subtypes.len(), subfields.len());
             Ok((
                 vec![datatypes::Field::new(
                     name,
@@ -194,13 +200,9 @@ fn read_field<N: Into<String>>(
         }
         proto::r#type::Kind::Decimal => {
             if col_type.precision() > u8::MAX as u32 || col_type.scale() > i8::MAX as u32 {
-                return Err(Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "Unsupported decimal precision/scale: {}/{}",
-                        col_type.precision(),
-                        col_type.scale()
-                    ),
+                return Err(OrcError::UnsupportedDecimalType(
+                    col_type.precision(),
+                    col_type.scale(),
                 ));
             }
 
@@ -235,15 +237,21 @@ fn read_field<N: Into<String>>(
     }
 }
 
-/// Extract index of column in ORC schema associated with this field.
-/// Each ORC column has associated index in ORC file schema. This method extracts
-/// this index from column metadata.
-///
-/// **Warn**: field must be created by [`read_schema`] method. Otherwise, it returns `Err`.
-pub(crate) fn get_column_id(field: &arrow::datatypes::Field) -> crate::Result<u32> {
-    field.metadata()[COLUMN_ID]
-        .parse()
-        .map_err(|_| OrcError::General(format!("Column index is not set for field {}", field)))
+pub trait OrcColumnId {
+    fn orc_column_id(&self) -> crate::Result<u32>;
+}
+
+impl OrcColumnId for arrow::datatypes::Field {
+    /// Extract index of column in ORC schema associated with this field.
+    /// Each ORC column has associated index in ORC file schema. This method extracts
+    /// this index from column metadata.
+    ///
+    /// **Warn**: field must be created by [`read_schema`] method. Otherwise, it returns `Err`.
+    fn orc_column_id(&self) -> crate::Result<u32> {
+        self.metadata()[COLUMN_ID]
+            .parse()
+            .map_err(|_| OrcError::General(format!("Column index is not set for field {}", self)))
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,11 @@
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::encoding::rle::IntRleDecoder;
+use arrow::datatypes::UnionFields;
+
+use crate::encoding::rle::{ByteRleDecoder, IntRleDecoder};
 use crate::{proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor, ColumnReader};
@@ -13,7 +16,7 @@ pub struct StructReader<'a> {
     footer: proto::StripeFooter,
     stripe_meta: proto::StripeInformation,
     col_chunks: Cell<Vec<(arrow::datatypes::Field, arrow::array::ArrayRef)>>,
-    validity_bitmap: arrow::array::BooleanBufferBuilder,
+    validity_bitmap: Option<arrow::array::BooleanBufferBuilder>,
 }
 
 impl<'a> StructReader<'a> {
@@ -29,7 +32,7 @@ impl<'a> StructReader<'a> {
             col_chunks: Cell::default(),
             footer: footer.clone(),
             stripe_meta: stripe_meta.clone(),
-            validity_bitmap: arrow::array::BooleanBufferBuilder::new(1024),
+            validity_bitmap: None,
         }
     }
 }
@@ -50,33 +53,34 @@ impl<'a> ColumnProcessor for StructReader<'a> {
             result.push((f, col_chunk.unwrap()));
         }
         self.col_chunks = Cell::new(result);
+        self.validity_bitmap = Some(arrow::array::BooleanBufferBuilder::new(num_values));
         Ok(())
     }
 
     fn append_value(&mut self, _: usize) -> crate::Result<()> {
-        self.validity_bitmap.append(true);
+        self.validity_bitmap.as_mut().unwrap().append(true);
         Ok(())
     }
 
-    fn append_null(&mut self) {
-        self.validity_bitmap.append(false);
+    fn append_null(&mut self) -> crate::Result<()> {
+        self.validity_bitmap.as_mut().unwrap().append(false);
+        Ok(())
     }
 
-    fn complete(&mut self) -> arrow::array::ArrayRef {
-        Arc::new(arrow::array::StructArray::from((
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
+        Ok(Arc::new(arrow::array::StructArray::from((
             self.col_chunks.take(),
-            self.validity_bitmap.finish(),
-        )))
+            self.validity_bitmap.take().unwrap().finish(),
+        ))))
     }
 }
 
 pub struct ListReader<'a, RleInput> {
     data_type: arrow::datatypes::DataType,
     data: Box<dyn ColumnReader + 'a>,
-    data_buffer: Option<arrow::array::ArrayRef>,
     length_rle: IntRleDecoder<RleInput, u64>,
     length_chunk: arrow::buffer::ScalarBuffer<u64>,
-    validity_bitmap: arrow::array::BooleanBufferBuilder,
+    validity_bitmap: Option<arrow::array::BooleanBufferBuilder>,
 }
 
 impl<'a, RleStream> ListReader<'a, RleStream>
@@ -93,10 +97,9 @@ where
         Self {
             data_type,
             data,
-            data_buffer: None,
             length_rle: create_int_rle(length_stream, buffer_size, encoding),
             length_chunk: arrow::buffer::ScalarBuffer::from(Vec::new()),
-            validity_bitmap: arrow::array::BooleanBufferBuilder::new(buffer_size),
+            validity_bitmap: None,
         }
     }
 }
@@ -110,27 +113,27 @@ where
             .length_rle
             .read(num_values)?
             .ok_or(OrcError::MalformedPresentOrDataStream)?;
-
-        let total_size = self.length_chunk.iter().sum::<u64>() as usize;
-        self.data_buffer = Some(
-            self.data
-                .read(total_size)?
-                .ok_or(OrcError::MalformedPresentOrDataStream)?,
-        );
+        self.validity_bitmap = Some(arrow::array::BooleanBufferBuilder::new(num_values));
         Ok(())
     }
 
     fn append_value(&mut self, _: usize) -> crate::Result<()> {
-        self.validity_bitmap.append(true);
+        self.validity_bitmap.as_mut().unwrap().append(true);
         Ok(())
     }
 
-    fn append_null(&mut self) {
-        self.validity_bitmap.append(false);
+    fn append_null(&mut self) -> crate::Result<()> {
+        self.validity_bitmap.as_mut().unwrap().append(false);
+        Ok(())
     }
 
-    fn complete(&mut self) -> arrow::array::ArrayRef {
-        let array = self.data_buffer.take().unwrap();
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
+        let total_size = self.length_chunk.iter().sum::<u64>() as usize;
+        let array = self
+            .data
+            .read(total_size)?
+            .ok_or(OrcError::MalformedPresentOrDataStream)?;
+
         let child_data = array.to_data();
         let mut offsets = Vec::with_capacity(self.length_chunk.len());
         let mut offset = 0i32;
@@ -146,9 +149,104 @@ where
                 .len(self.length_chunk.len())
                 .add_buffer(offset_buffer.into_inner())
                 .add_child_data(child_data)
-                .null_bit_buffer(Some(self.validity_bitmap.finish()))
+                .null_bit_buffer(Some(self.validity_bitmap.take().unwrap().finish()))
                 .build_unchecked()
         };
-        Arc::new(arrow::array::ListArray::from(array_data))
+        Ok(Arc::new(arrow::array::ListArray::from(array_data)))
+    }
+}
+
+pub struct UnionReader<'a, RleStream> {
+    // Union schema
+    fields: UnionFields,
+    /// Readers for union fields(in order defined by the union schema).
+    field_readers: Vec<Box<dyn ColumnReader + 'a>>,
+    /// RLE data which contains sequence of union field IDs
+    /// which indicates field of the next value found in ORC union stream.
+    /// In our case, this is the same as type_id buffer(according to the Arrow Union spec).
+    field_id_rle: ByteRleDecoder<RleStream>,
+    field_id_chunk: arrow::buffer::Buffer,
+}
+
+impl<'a, RleStream> UnionReader<'a, RleStream>
+where
+    RleStream: std::io::Read,
+{
+    pub fn new(
+        fields: UnionFields,
+        fields_data: Vec<Box<dyn ColumnReader + 'a>>,
+        field_id_stream: RleStream,
+        buffer_size: usize,
+    ) -> Self {
+        Self {
+            fields,
+            field_readers: fields_data,
+            field_id_rle: ByteRleDecoder::new(field_id_stream, buffer_size),
+            field_id_chunk: arrow::buffer::Buffer::from(Vec::new()),
+        }
+    }
+}
+
+impl<'a, RleStream> ColumnProcessor for UnionReader<'a, RleStream>
+where
+    RleStream: std::io::Read,
+{
+    fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
+        self.field_id_chunk = self
+            .field_id_rle
+            .read(num_values)?
+            .ok_or(OrcError::MalformedPresentOrDataStream)?;
+        Ok(())
+    }
+
+    fn append_value(&mut self, index: usize) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn append_null(&mut self) -> crate::Result<()> {
+        // Currently, there is no support for nullable unions,
+        // because they require modification of children arrays(
+        // which will be chosen randomly because ORC doesn't provide
+        // information about the field which contains NULL).
+        Err(OrcError::TypeNotSupported(
+            arrow::datatypes::DataType::Union(
+                self.fields.clone(),
+                arrow::datatypes::UnionMode::Dense,
+            ),
+        ))
+    }
+
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
+        // Per subtype value offsets: points to some entry in the associated
+        // Arrow array which stores values for this subtype.
+        let mut offsets: Vec<i32> = Vec::with_capacity(self.fields.len());
+        // How many values we should read from particular column. Stores count per subtype.
+        let mut counts: Vec<usize> = Vec::with_capacity(self.fields.len());
+        counts.resize(self.fields.len(), 0);
+        for id in self.field_id_chunk.iter() {
+            let i = *id as usize;
+            offsets[i] = counts[i] as i32; // offset is i32 according to Arrow union spec
+            counts[i] += 1;
+        }
+
+        let fields: Vec<&arrow::datatypes::Field> =
+            self.fields.iter().map(|(_, f)| f.deref()).collect();
+        let mut fields_data: Vec<(arrow::datatypes::Field, arrow::array::ArrayRef)> =
+            Vec::with_capacity(self.fields.len());
+        for (i, batch_size) in counts.iter().enumerate() {
+            fields_data.push((
+                fields[i].clone(),
+                self.field_readers[i]
+                    .read(*batch_size)?
+                    .ok_or(OrcError::MalformedUnion)?,
+            ));
+        }
+
+        Ok(Arc::new(arrow::array::UnionArray::try_new(
+            &self.fields.iter().map(|(i, _)| i).collect::<Vec<i8>>(),
+            self.field_id_chunk.slice(0),
+            Some(arrow::buffer::Buffer::from_vec(offsets)),
+            fields_data,
+        )?))
     }
 }

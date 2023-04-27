@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::num;
 use std::sync::Arc;
 
 use crate::encoding::rle::IntRleDecoder;
@@ -10,7 +11,7 @@ pub struct BinaryReader<RleInput, Input> {
     length_rle: IntRleDecoder<RleInput, i64>,
     data: std::io::BufReader<Input>,
     buffers: Vec<bytes::Bytes>,
-    result_builder: arrow::array::BinaryBuilder,
+    result_builder: Option<arrow::array::BinaryBuilder>,
 }
 
 impl<RleStream, DataStream> BinaryReader<RleStream, DataStream>
@@ -28,7 +29,7 @@ where
             length_rle: create_int_rle(length_stream, buffer_size, encoding),
             data: std::io::BufReader::with_capacity(buffer_size, data_stream),
             buffers: Vec::new(),
-            result_builder: arrow::array::BinaryBuilder::new(),
+            result_builder: None,
         }
     }
 }
@@ -42,27 +43,37 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
             .read(num_values)?
             .ok_or(OrcError::MalformedPresentOrDataStream)?;
         self.buffers = Vec::with_capacity(num_values);
+        let mut total_size = 0;
         for size in &sizes {
-            let mut buffer = bytes::BytesMut::with_capacity(*size as usize);
+            let size = *size as usize;
+            let mut buffer = bytes::BytesMut::with_capacity(size);
             unsafe { buffer.set_len(buffer.capacity()) };
             self.data.read_exact(&mut buffer)?;
             self.buffers.push(buffer.freeze());
+            total_size += size;
         }
+        self.result_builder = Some(arrow::array::BinaryBuilder::with_capacity(
+            num_values, total_size,
+        ));
         Ok(())
     }
 
     fn append_value(&mut self, index: usize) -> crate::Result<()> {
-        self.result_builder.append_value(&self.buffers[index]);
+        self.result_builder
+            .as_mut()
+            .unwrap()
+            .append_value(&self.buffers[index]);
         self.buffers[index].clear();
         Ok(())
     }
 
-    fn append_null(&mut self) {
-        self.result_builder.append_null();
+    fn append_null(&mut self) -> crate::Result<()> {
+        self.result_builder.as_mut().unwrap().append_null();
+        Ok(())
     }
 
-    fn complete(&mut self) -> arrow::array::ArrayRef {
-        Arc::new(self.result_builder.finish())
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
+        Ok(Arc::new(self.result_builder.take().unwrap().finish()))
     }
 }
 
@@ -70,7 +81,7 @@ pub struct StringReader<RleInput, Input> {
     length_rle: IntRleDecoder<RleInput, u64>,
     data: std::io::BufReader<Input>,
     strings: Vec<String>,
-    result_builder: arrow::array::StringBuilder,
+    result_builder: Option<arrow::array::StringBuilder>,
 }
 
 impl<RleStream, DataStream> StringReader<RleStream, DataStream>
@@ -88,7 +99,7 @@ where
             length_rle: create_int_rle(length_stream, buffer_size, encoding),
             data: std::io::BufReader::with_capacity(buffer_size, data_stream),
             strings: Vec::new(),
-            result_builder: arrow::array::StringBuilder::new(),
+            result_builder: None,
         }
     }
 }
@@ -102,8 +113,10 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
             .read(num_values)?
             .ok_or(OrcError::MalformedPresentOrDataStream)?;
         self.strings = Vec::with_capacity(num_values);
+        let mut total_size = 0;
         for size in &sizes {
-            let mut buffer = Vec::with_capacity(*size as usize);
+            let size = *size as usize;
+            let mut buffer = Vec::with_capacity(size);
             #[allow(clippy::uninit_vec)]
             unsafe {
                 buffer.set_len(buffer.capacity())
@@ -111,22 +124,31 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
             self.data.read_exact(&mut buffer)?;
             self.strings
                 .push(unsafe { String::from_utf8_unchecked(buffer) });
+            total_size += size;
         }
+
+        self.result_builder = Some(arrow::array::StringBuilder::with_capacity(
+            num_values, total_size,
+        ));
         Ok(())
     }
 
     fn append_value(&mut self, index: usize) -> crate::Result<()> {
-        self.result_builder.append_value(&self.strings[index]);
+        self.result_builder
+            .as_mut()
+            .unwrap()
+            .append_value(&self.strings[index]);
         self.strings[index].clear();
         Ok(())
     }
 
-    fn append_null(&mut self) {
-        self.result_builder.append_null();
+    fn append_null(&mut self) -> crate::Result<()> {
+        self.result_builder.as_mut().unwrap().append_null();
+        Ok(())
     }
 
-    fn complete(&mut self) -> arrow::array::ArrayRef {
-        Arc::new(self.result_builder.finish())
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
+        Ok(Arc::new(self.result_builder.take().unwrap().finish()))
     }
 }
 
@@ -134,7 +156,7 @@ pub struct StringDictionaryReader<RleInput> {
     dict_rle: IntRleDecoder<RleInput, u32>,
     buffer: arrow::buffer::ScalarBuffer<u32>,
     dict_values: arrow::array::StringArray,
-    result_builder: arrow::array::StringDictionaryBuilder<arrow::datatypes::UInt32Type>,
+    result_builder: Option<arrow::array::StringDictionaryBuilder<arrow::datatypes::UInt32Type>>,
 }
 
 impl<RleStream> StringDictionaryReader<RleStream>
@@ -175,7 +197,7 @@ where
             dict_rle: create_int_rle(dict_idx_stream, buffer_size, encoding),
             buffer: arrow::buffer::ScalarBuffer::from(Vec::new()),
             dict_values: arrow::array::StringArray::from(dict_values),
-            result_builder: arrow::array::StringDictionaryBuilder::new(),
+            result_builder: None,
         })
     }
 }
@@ -186,6 +208,7 @@ impl<RleStream: io_utils::BufRead> ColumnProcessor for StringDictionaryReader<Rl
             .dict_rle
             .read(num_values)?
             .ok_or(OrcError::MalformedPresentOrDataStream)?;
+        self.result_builder= Some(arrow::array::StringDictionaryBuilder::new();
         Ok(())
     }
 
@@ -193,15 +216,16 @@ impl<RleStream: io_utils::BufRead> ColumnProcessor for StringDictionaryReader<Rl
         // FIXME: blind access by index can cause panics if ORC file is corrupted.
         let value_index = self.buffer[index] as usize;
         let value = self.dict_values.value(value_index);
-        self.result_builder.append_value(value);
+        self.result_builder.as_mut().unwrap().append_value(value);
         Ok(())
     }
 
-    fn append_null(&mut self) {
-        self.result_builder.append_null();
+    fn append_null(&mut self) -> crate::Result<()> {
+        self.result_builder.as_mut().unwrap().append_null();
+        Ok(())
     }
 
-    fn complete(&mut self) -> arrow::array::ArrayRef {
-        Arc::new(self.result_builder.finish())
+    fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
+        Ok(Arc::new(self.result_builder.take().unwrap().finish()))
     }
 }

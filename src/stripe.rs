@@ -168,6 +168,7 @@ impl<'a> StripeReader<'a> {
     }
 }
 
+// TODO: pruning using an index
 mod index {
     use crate::proto;
 

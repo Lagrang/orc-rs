@@ -7,7 +7,7 @@ use crate::OrcError;
 
 use super::Integer;
 
-struct RunState {
+struct RleState {
     // Index of last element in 'plain' sequence of values
     length: usize,
     // Index of next value in 'plain' sequence to return
@@ -16,7 +16,7 @@ struct RunState {
     is_plain_sequence: bool,
 }
 
-impl RunState {
+impl RleState {
     fn empty() -> Self {
         Self {
             length: 0,
@@ -25,7 +25,22 @@ impl RunState {
         }
     }
 
-    fn from_header(header: i8) -> Self {
+    fn for_v2(rleType: &RleV2Type) -> Self {
+        match rleType {
+            RleV2Type::ShortRepeat(_, repeat_count) => RleState {
+                length: *repeat_count as usize,
+                consumed: 0,
+                is_plain_sequence: false,
+            },
+            RleV2Type::Direct(_, num_values, _) => RleState {
+                length: *num_values as usize,
+                consumed: 0,
+                is_plain_sequence: true,
+            },
+        }
+    }
+
+    fn from_v1_header(header: i8) -> Self {
         let len = if header >= 0 {
             // Run length at least 3 values and this min.length is not coded in 'length' field of header.
             header as usize + 3
@@ -74,7 +89,7 @@ pub struct ByteRleDecoder<Input> {
     file_reader: std::io::BufReader<Input>,
     completed: bool,
     // State of current run
-    current_run: RunState,
+    current_run: RleState,
     // Used only if current run is not a sequence of literals.
     // This is single value of RLE repeated N times.
     run_value: u8,
@@ -86,7 +101,7 @@ impl<Input: std::io::Read> ByteRleDecoder<Input> {
         Self {
             file_reader: std::io::BufReader::with_capacity(cap, file_reader),
             completed: false,
-            current_run: RunState::empty(),
+            current_run: RleState::empty(),
             run_value: 0,
         }
     }
@@ -142,7 +157,7 @@ impl<Input: std::io::Read> ByteRleDecoder<Input> {
             return Ok(false);
         }
         let header = byte_buf[0] as i8;
-        self.current_run = RunState::from_header(header);
+        self.current_run = RleState::from_v1_header(header);
 
         // Read repeated value of run if this is not a 'plain sequence of literals'.
         if !self.current_run.is_plain_sequence {
@@ -241,7 +256,7 @@ pub(crate) struct IntRleV1Decoder<Input, IntType> {
     file_reader: std::io::BufReader<Input>,
     completed: bool,
     // State of current run.
-    current_run: RunState,
+    current_run: RleState,
     // Delta value for the current RLE run. This is second byte in run, right after the header.
     delta: i8,
     // First value in the current RLE run which is used as base for a computation of run elements.
@@ -264,7 +279,7 @@ impl<Input: std::io::Read, IntType> IntRleV1Decoder<Input, IntType> {
         Self {
             file_reader: std::io::BufReader::with_capacity(cap, file_reader),
             completed: false,
-            current_run: RunState::empty(),
+            current_run: RleState::empty(),
             delta: 0,
             base_value: IntType::ZERO,
         }
@@ -352,7 +367,7 @@ impl<Input: std::io::Read, IntType> IntRleV1Decoder<Input, IntType> {
             return Ok(false);
         }
         let header = byte_buf[0] as i8;
-        self.current_run = RunState::from_header(header);
+        self.current_run = RleState::from_v1_header(header);
 
         if !self.current_run.is_plain_sequence {
             // Decode delta and base value of RLE run.
@@ -367,6 +382,105 @@ impl<Input: std::io::Read, IntType> IntRleV1Decoder<Input, IntType> {
 
         Ok(true)
     }
+}
+
+enum RleV2Type {
+    /// The short repeat encoding is used for short repeating integer sequences
+    /// with the goal of minimizing the overhead of the header.
+    /// All of the bits listed in the header are from the first byte to the last
+    /// and from most significant bit to least significant bit.
+    /// If the type is signed, the value is zigzag encoded.
+    ///
+    /// Wire format:
+    /// - 1 byte header:
+    ///     - 2 bits for encoding type (0)
+    ///     - 3 bits for width (W) of repeating value (1 to 8 bytes)
+    ///     - 3 bits for repeat count (3 to 10 values)
+    /// - W bytes in big endian format, which is zigzag encoded if they type is signed
+    ///
+    /// The unsigned sequence of [10000, 10000, 10000, 10000, 10000] would be serialized
+    /// with short repeat encoding (0), a width of 2 bytes (1), and repeat count
+    /// of 5 (2) as [0x0a, 0x27, 0x10].
+    ShortRepeat(u8, u8),
+    /// The direct encoding is used for integer sequences whose values have a relatively
+    /// constant bit width. It encodes the values directly using a fixed width big endian encoding.
+    ///
+    /// Wire format:
+    ///  - 2 bytes header
+    ///     - 2 bits for encoding type (1)
+    ///     - 5 bits for encoded width (W) of values (1 to 64 bits) using the 5 bit width encoding table
+    ///     - 9 bits for length (L) (1 to 512 values)
+    ///  - W * L bits (padded to the next byte) encoded in big endian format,
+    /// which is zigzag encoding if the type is signed.
+    ///
+    /// The unsigned sequence of [23713, 43806, 57005, 48879] would be serialized with direct encoding (1),
+    /// a width of 16 bits (15), and length of 4 (3) as [0x5e, 0x03, 0x5c, 0xa1, 0xab, 0x1e, 0xde, 0xad, 0xbe, 0xef].
+    Direct(u8, u16, u16),
+    /// The Delta encoding is used for monotonically increasing or decreasing sequences.
+    /// The first two numbers in the sequence can not be identical, because the encoding
+    /// is using the sign of the first delta to determine if the series is increasing or decreasing.
+    ///
+    /// Wire format:
+    ///  - 2 bytes header
+    ///     - 2 bits for encoding type (3)
+    ///     - 5 bits for encoded width (W) of deltas (0 to 64 bits) using the 5 bit width encoding table
+    ///     - 9 bits for run length (L) (1 to 512 values)
+    ///  - Base value - encoded as (signed or unsigned) varint
+    ///  - Delta base - encoded as signed varint
+    ///  - Delta values (W * (L - 2)) bytes - encode each delta after the first one. If the delta base is positive, the sequence is increasing and if it is negative the sequence is decreasing.
+    ///
+    /// The unsigned sequence of [2, 3, 5, 7, 11, 13, 17, 19, 23, 29] would be serialized with delta encoding (3), a width of 4 bits (3), length of 10 (9), a base of 2 (2), and first delta of 1 (2). The resulting sequence is [0xc6, 0x09, 0x02, 0x02, 0x22, 0x42, 0x42, 0x46].
+    Delta(),
+}
+
+const V2_DIRECT_WIDTH_TABLE: [u8; 32] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 28,
+    30, 32, 40, 48, 56, 64,
+];
+
+impl RleV2Type {
+    fn parse(header_bytes: &[u8]) -> crate::Result<Self> {
+        if header_bytes.is_empty() {
+            return Err(OrcError::MalformedRleBlock);
+        }
+
+        match header_bytes[0] >> 6 {
+            0 => {
+                let width = ((header_bytes[0] & 0x3F) >> 3) + 1;
+                let repeat_cnt = (header_bytes[0] & 0x7) + 3;
+                Ok(RleV2Type::ShortRepeat(width, repeat_cnt))
+            }
+            1 => {
+                if header_bytes.len() < 2 {
+                    return Err(OrcError::MalformedRleBlock);
+                }
+
+                // Bits from 5 to 1 contains encoded value width.
+                let width_index = ((header_bytes[0] & 0x3E) >> 1) as usize;
+                let bit_width = V2_DIRECT_WIDTH_TABLE[width_index];
+                // Least significant bit from first byte + 8 bits of second byte contains
+                // number of values stored in this direct encoded sequence.
+                let mut num_values = ((header_bytes[0] & 0x1) as u16) << 8;
+                num_values |= header_bytes[1] as u16;
+                num_values += 1;
+                // Compute size(in bytes) of the direct encoded values.
+                let bytes: u16 = ((bit_width as u16 * num_values) + 7) & (-8i16 as u16); // round up to the next byte
+                Ok(RleV2Type::Direct(bit_width, num_values, bytes))
+            }
+        }
+    }
+}
+
+pub(crate) struct IntRleV2Decoder<Input, IntType> {
+    file_reader: std::io::BufReader<Input>,
+    completed: bool,
+    // State of current run.
+    current_run: RleState,
+    // Delta value for the current RLE run. This is second byte in run, right after the header.
+    delta: i8,
+    // First value in the current RLE run which is used as base for a computation of run elements.
+    // This is third byte in run, in follows after the delta.
+    base_value: IntType,
 }
 
 #[cfg(test)]

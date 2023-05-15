@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::UnionFields;
 
-use crate::encoding::rle::{ByteRleDecoder, IntRleDecoder};
+use crate::encoding::rlev1::{ByteRleDecoder, IntRleDecoder};
 use crate::{proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor, ColumnReader};

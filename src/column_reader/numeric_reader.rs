@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::encoding::rle::{ByteRleDecoder, IntRleDecoder};
-use crate::encoding::UnsignedInteger;
+use crate::encoding::rlev1::{ByteRleDecoder, IntRleDecoder};
+use crate::encoding::{Integer, UnsignedInteger};
 use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};
@@ -356,22 +356,12 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Decimal128Reader<DataStr
     }
 
     fn append_value(&mut self, index: usize) -> crate::Result<()> {
-        let mut value = u128::varint_decode(&mut self.data_stream)?
-            .0
-            .zigzag_decode();
+        let mut value = u128::from_varint(&mut self.data_stream)?.0.zigzag_decode();
 
         // Fix scaling, ported from C++ Decimal64ColumnReader.
         let val_scale = self.scale_chunk[index] as u8;
         let signed = self.scale as i32 - val_scale as i32;
         let scale_fix = signed.unsigned_abs();
-        // const DECIMAL64_MAX_PRECISION: u8 = 18;
-        // if scale_fix <= DECIMAL64_MAX_PRECISION as u32 && scale_fix != 0 {
-        //     return Err(OrcError::InvalidDecimalScale(
-        //         self.scale,
-        //         val_scale,
-        //         DECIMAL64_MAX_PRECISION,
-        //     ));
-        // }
 
         if signed > 0 {
             value *= 1i128.pow(scale_fix);

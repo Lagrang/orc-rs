@@ -2,7 +2,7 @@ use std::io::Read;
 use std::num;
 use std::sync::Arc;
 
-use crate::encoding::rle::IntRleDecoder;
+use crate::encoding::rlev1::IntRleDecoder;
 use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};

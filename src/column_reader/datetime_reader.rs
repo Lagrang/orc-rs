@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::TimeZone;
 
-use crate::encoding::rle::IntRleDecoder;
+use crate::encoding::rlev1::IntRleDecoder;
 use crate::io_utils::{self};
 use crate::{proto, OrcError};
 

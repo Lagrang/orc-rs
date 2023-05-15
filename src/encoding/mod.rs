@@ -1,8 +1,10 @@
+use std::io::{ErrorKind, Read};
 use std::ops::{
-    AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
+    Add, AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
 };
 
-pub mod rle;
+pub mod rlev1;
+pub mod rlev2;
 
 /// Marker trait for signed integer types.
 pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
@@ -21,6 +23,14 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     + Not<Output = Self>
 {
     const ZERO: Self;
+    const IS_SIGNED: bool;
+
+    /// Type represent unsigned counterpart of this type, e.g. i8 => u8.
+    /// If type is unsigned, represents itself.
+    type UnsignedCounterpart: UnsignedInteger<TYPE_SIZE, MAX_ENCODED_SIZE>;
+    /// Type represent signed counterpart of this type, e.g. u8 => i8.
+    /// If type is signed, represents itself.
+    type SignedCounterpart: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>;
 
     /// Encode integer as 'base 128 varint' value.
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
@@ -32,13 +42,18 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     /// Decode 'base 128 varint' value.
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
     /// Expected order of varint bytes is little endian.
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)>;
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)>;
 
     fn overflow_add_i8(&self, other: i8) -> Self;
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self;
 }
 
 impl Integer<1, 2> for i8 {
     const ZERO: Self = 0;
+    const IS_SIGNED: bool = true;
+
+    type UnsignedCounterpart = u8;
+    type SignedCounterpart = Self;
 
     #[inline]
     fn as_varint(&self) -> ([u8; 2], usize) {
@@ -46,7 +61,7 @@ impl Integer<1, 2> for i8 {
     }
 
     #[inline]
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
         let (decoded, size): (u8, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
         Ok((decoded.zigzag_decode(), size))
     }
@@ -55,10 +70,18 @@ impl Integer<1, 2> for i8 {
     fn overflow_add_i8(&self, other: i8) -> Self {
         self.overflowing_add(other).0
     }
+
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        self.overflowing_add(other).0
+    }
 }
 
 impl Integer<2, 3> for i16 {
     const ZERO: Self = 0;
+    const IS_SIGNED: bool = true;
+
+    type UnsignedCounterpart = u16;
+    type SignedCounterpart = Self;
 
     #[inline]
     fn as_varint(&self) -> ([u8; 3], usize) {
@@ -66,7 +89,7 @@ impl Integer<2, 3> for i16 {
     }
 
     #[inline]
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
         let (decoded, size): (u16, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
         Ok((decoded.zigzag_decode(), size))
     }
@@ -75,10 +98,18 @@ impl Integer<2, 3> for i16 {
     fn overflow_add_i8(&self, other: i8) -> Self {
         self.overflowing_add(other as i16).0
     }
+
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        self.overflowing_add(other).0
+    }
 }
 
 impl Integer<4, 5> for i32 {
     const ZERO: Self = 0;
+    const IS_SIGNED: bool = true;
+
+    type UnsignedCounterpart = u32;
+    type SignedCounterpart = Self;
 
     #[inline]
     fn as_varint(&self) -> ([u8; 5], usize) {
@@ -86,7 +117,7 @@ impl Integer<4, 5> for i32 {
     }
 
     #[inline]
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
         let (decoded, size): (u32, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
         Ok((decoded.zigzag_decode(), size))
     }
@@ -95,10 +126,18 @@ impl Integer<4, 5> for i32 {
     fn overflow_add_i8(&self, other: i8) -> Self {
         self.overflowing_add(other as i32).0
     }
+
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        self.overflowing_add(other).0
+    }
 }
 
 impl Integer<8, 10> for i64 {
     const ZERO: Self = 0;
+    const IS_SIGNED: bool = true;
+
+    type UnsignedCounterpart = u64;
+    type SignedCounterpart = Self;
 
     #[inline]
     fn as_varint(&self) -> ([u8; 10], usize) {
@@ -106,7 +145,7 @@ impl Integer<8, 10> for i64 {
     }
 
     #[inline]
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
         let (decoded, size): (u64, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
         Ok((decoded.zigzag_decode(), size))
     }
@@ -115,61 +154,203 @@ impl Integer<8, 10> for i64 {
     fn overflow_add_i8(&self, other: i8) -> Self {
         self.overflowing_add(other as i64).0
     }
-}
 
-pub(crate) trait SignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
-    Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + Neg<Output = Self>
-{
-    /// Type represent unsigned counterpart of this type, e.g. i8 => u8.
-    type UnsignedCounterpart;
-
-    /// Encode value using Zigzag algorithm.
-    ///
-    /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#signed-ints)
-    fn zigzag_encode(&self) -> Self::UnsignedCounterpart;
-}
-
-impl SignedInteger<1, 2> for i8 {
-    type UnsignedCounterpart = u8;
-
-    #[inline]
-    fn zigzag_encode(&self) -> u8 {
-        ((*self << 1) ^ (*self >> 7)) as u8
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        self.overflowing_add(other).0
     }
 }
 
-impl SignedInteger<2, 3> for i16 {
-    type UnsignedCounterpart = u16;
+impl Integer<16, 19> for i128 {
+    const ZERO: Self = 0;
+    const IS_SIGNED: bool = true;
+
+    type UnsignedCounterpart = u128;
+    type SignedCounterpart = Self;
 
     #[inline]
-    fn zigzag_encode(&self) -> u16 {
-        ((*self << 1) ^ (*self >> 15)) as u16
+    fn as_varint(&self) -> ([u8; 19], usize) {
+        self.zigzag_encode().as_varint()
+    }
+
+    #[inline]
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        let (decoded, size): (u128, usize) = UnsignedInteger::varint_decode(encoded_stream)?;
+        Ok((decoded.zigzag_decode(), size))
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i128).overflowing_add(other as i128).0
+    }
+
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        self.overflowing_add(other).0
     }
 }
 
-impl SignedInteger<4, 5> for i32 {
-    type UnsignedCounterpart = u32;
+impl Integer<1, 2> for u8 {
+    const ZERO: Self = 0;
+    const IS_SIGNED: bool = false;
+
+    type UnsignedCounterpart = Self;
+    type SignedCounterpart = i8;
 
     #[inline]
-    fn zigzag_encode(&self) -> u32 {
-        ((*self << 1) ^ (*self >> 31)) as u32
+    fn as_varint(&self) -> ([u8; 2], usize) {
+        UnsignedInteger::varint_encode(*self)
+    }
+
+    #[inline]
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i8).overflowing_add(other).0 as u8
+    }
+
+    #[inline]
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        if other.is_positive() {
+            self.overflowing_add(other as u8).0
+        } else {
+            self.overflowing_sub(other.abs() as u8).0
+        }
     }
 }
 
-impl SignedInteger<8, 10> for i64 {
-    type UnsignedCounterpart = u64;
+impl Integer<2, 3> for u16 {
+    const ZERO: Self = 0;
+    const IS_SIGNED: bool = false;
+
+    type UnsignedCounterpart = Self;
+    type SignedCounterpart = i16;
 
     #[inline]
-    fn zigzag_encode(&self) -> u64 {
-        ((*self << 1) ^ (*self >> 63)) as u64
+    fn as_varint(&self) -> ([u8; 3], usize) {
+        UnsignedInteger::varint_encode(*self)
+    }
+
+    #[inline]
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i16).overflowing_add(other as i16).0 as u16
+    }
+
+    #[inline]
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        if other.is_positive() {
+            self.overflowing_add(other as u16).0
+        } else {
+            self.overflowing_sub(other.abs() as u16).0
+        }
+    }
+}
+
+impl Integer<4, 5> for u32 {
+    const ZERO: Self = 0;
+    const IS_SIGNED: bool = false;
+
+    type UnsignedCounterpart = Self;
+    type SignedCounterpart = i32;
+
+    #[inline]
+    fn as_varint(&self) -> ([u8; 5], usize) {
+        UnsignedInteger::varint_encode(*self)
+    }
+
+    #[inline]
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i32).overflowing_add(other as i32).0 as u32
+    }
+
+    #[inline]
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        if other.is_positive() {
+            self.overflowing_add(other as u32).0
+        } else {
+            self.overflowing_sub(other.abs() as u32).0
+        }
+    }
+}
+
+impl Integer<8, 10> for u64 {
+    const ZERO: Self = 0;
+    const IS_SIGNED: bool = false;
+
+    type UnsignedCounterpart = Self;
+    type SignedCounterpart = i64;
+
+    #[inline]
+    fn as_varint(&self) -> ([u8; 10], usize) {
+        UnsignedInteger::varint_encode(*self)
+    }
+
+    #[inline]
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i64).overflowing_add(other as i64).0 as u64
+    }
+
+    #[inline]
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        if other.is_positive() {
+            self.overflowing_add(other as u64).0
+        } else {
+            self.overflowing_sub(other.abs() as u64).0
+        }
+    }
+}
+
+impl Integer<16, 19> for u128 {
+    const ZERO: Self = 0;
+    const IS_SIGNED: bool = false;
+
+    type UnsignedCounterpart = Self;
+    type SignedCounterpart = i128;
+
+    #[inline]
+    fn as_varint(&self) -> ([u8; 19], usize) {
+        UnsignedInteger::varint_encode(*self)
+    }
+
+    #[inline]
+    fn from_varint(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
+        UnsignedInteger::varint_decode(encoded_stream)
+    }
+
+    #[inline]
+    fn overflow_add_i8(&self, other: i8) -> Self {
+        (*self as i128).overflowing_add(other as i128).0 as u128
+    }
+
+    #[inline]
+    fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
+        if other.is_positive() {
+            self.overflowing_add(other as u128).0
+        } else {
+            self.overflowing_sub(other.abs() as u128).0
+        }
     }
 }
 
 pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     Integer<TYPE_SIZE, MAX_ENCODED_SIZE>
 {
-    /// Type represent unsigned counterpart of this type, e.g. u8 => i8.
-    type SignedCounterpart;
     /// Value which contains a mask used by varint encoder/decoder.
     /// Mask should have following form: 7 least significant bits are set to 0,
     /// others, starting from 8 up to TYPE_SIZE * 8, set to 1.
@@ -240,25 +421,7 @@ pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE:
     fn zigzag_decode(&self) -> Self::SignedCounterpart;
 }
 
-impl Integer<1, 2> for u8 {
-    const ZERO: Self = 0;
-
-    fn as_varint(&self) -> ([u8; 2], usize) {
-        UnsignedInteger::varint_encode(*self)
-    }
-
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
-        UnsignedInteger::varint_decode(encoded_stream)
-    }
-
-    #[inline]
-    fn overflow_add_i8(&self, other: i8) -> Self {
-        (*self as i8).overflowing_add(other).0 as u8
-    }
-}
-
 impl UnsignedInteger<1, 2> for u8 {
-    type SignedCounterpart = i8;
     const VARINT_MASK: Self = !0x7f;
     const VARINT_SHIFT: Self = 7;
 
@@ -268,25 +431,7 @@ impl UnsignedInteger<1, 2> for u8 {
     }
 }
 
-impl Integer<2, 3> for u16 {
-    const ZERO: Self = 0;
-
-    fn as_varint(&self) -> ([u8; 3], usize) {
-        UnsignedInteger::varint_encode(*self)
-    }
-
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
-        UnsignedInteger::varint_decode(encoded_stream)
-    }
-
-    #[inline]
-    fn overflow_add_i8(&self, other: i8) -> Self {
-        (*self as i16).overflowing_add(other as i16).0 as u16
-    }
-}
-
 impl UnsignedInteger<2, 3> for u16 {
-    type SignedCounterpart = i16;
     const VARINT_MASK: Self = !0x7f;
     const VARINT_SHIFT: Self = 7;
 
@@ -296,25 +441,7 @@ impl UnsignedInteger<2, 3> for u16 {
     }
 }
 
-impl Integer<4, 5> for u32 {
-    const ZERO: Self = 0;
-
-    fn as_varint(&self) -> ([u8; 5], usize) {
-        UnsignedInteger::varint_encode(*self)
-    }
-
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
-        UnsignedInteger::varint_decode(encoded_stream)
-    }
-
-    #[inline]
-    fn overflow_add_i8(&self, other: i8) -> Self {
-        (*self as i32).overflowing_add(other as i32).0 as u32
-    }
-}
-
 impl UnsignedInteger<4, 5> for u32 {
-    type SignedCounterpart = i32;
     const VARINT_MASK: Self = !0x7f;
     const VARINT_SHIFT: Self = 7;
 
@@ -324,53 +451,7 @@ impl UnsignedInteger<4, 5> for u32 {
     }
 }
 
-impl Integer<8, 10> for u64 {
-    const ZERO: Self = 0;
-
-    fn as_varint(&self) -> ([u8; 10], usize) {
-        UnsignedInteger::varint_encode(*self)
-    }
-
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
-        UnsignedInteger::varint_decode(encoded_stream)
-    }
-
-    #[inline]
-    fn overflow_add_i8(&self, other: i8) -> Self {
-        (*self as i64).overflowing_add(other as i64).0 as u64
-    }
-}
-
-impl UnsignedInteger<16, 19> for u128 {
-    type SignedCounterpart = i128;
-    const VARINT_MASK: Self = !0x7f;
-    const VARINT_SHIFT: Self = 7;
-
-    #[inline]
-    fn zigzag_decode(&self) -> i128 {
-        (*self >> 1) as i128 ^ ((*self & 1) as i128).neg()
-    }
-}
-
-impl Integer<16, 19> for u128 {
-    const ZERO: Self = 0;
-
-    fn as_varint(&self) -> ([u8; 19], usize) {
-        UnsignedInteger::varint_encode(*self)
-    }
-
-    fn varint_decode(encoded_stream: &mut dyn std::io::Read) -> std::io::Result<(Self, usize)> {
-        UnsignedInteger::varint_decode(encoded_stream)
-    }
-
-    #[inline]
-    fn overflow_add_i8(&self, other: i8) -> Self {
-        (*self as i128).overflowing_add(other as i128).0 as u128
-    }
-}
-
 impl UnsignedInteger<8, 10> for u64 {
-    type SignedCounterpart = i64;
     const VARINT_MASK: Self = !0x7f;
     const VARINT_SHIFT: Self = 7;
 
@@ -380,10 +461,67 @@ impl UnsignedInteger<8, 10> for u64 {
     }
 }
 
+impl UnsignedInteger<16, 19> for u128 {
+    const VARINT_MASK: Self = !0x7f;
+    const VARINT_SHIFT: Self = 7;
+
+    #[inline]
+    fn zigzag_decode(&self) -> i128 {
+        (*self >> 1) as i128 ^ ((*self & 1) as i128).neg()
+    }
+}
+
+pub(crate) trait SignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
+    Integer<TYPE_SIZE, MAX_ENCODED_SIZE>
+{
+    /// Encode value using Zigzag algorithm.
+    ///
+    /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#signed-ints)
+    fn zigzag_encode(&self) -> Self::UnsignedCounterpart;
+}
+
+impl SignedInteger<1, 2> for i8 {
+    #[inline]
+    fn zigzag_encode(&self) -> Self::UnsignedCounterpart {
+        ((*self << 1) ^ (*self >> 7)) as u8
+    }
+}
+
+impl SignedInteger<2, 3> for i16 {
+    #[inline]
+    fn zigzag_encode(&self) -> Self::UnsignedCounterpart {
+        ((*self << 1) ^ (*self >> 15)) as u16
+    }
+}
+
+impl SignedInteger<4, 5> for i32 {
+    #[inline]
+    fn zigzag_encode(&self) -> Self::UnsignedCounterpart {
+        ((*self << 1) ^ (*self >> 31)) as u32
+    }
+}
+
+impl SignedInteger<8, 10> for i64 {
+    #[inline]
+    fn zigzag_encode(&self) -> Self::UnsignedCounterpart {
+        ((*self << 1) ^ (*self >> 63)) as u64
+    }
+}
+
+impl SignedInteger<16, 19> for i128 {
+    #[inline]
+    fn zigzag_encode(&self) -> Self::UnsignedCounterpart {
+        ((*self << 1) ^ (*self >> 127)) as u128
+    }
+}
+
 pub(crate) trait ByteRepr<const N: usize> {
     fn to_le_bytes(&self) -> [u8; N];
     fn truncate_to_u8(&self) -> u8;
     fn from_byte(value: u8) -> Self;
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized;
 }
 
 impl ByteRepr<1> for i8 {
@@ -392,12 +530,24 @@ impl ByteRepr<1> for i8 {
         i8::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as i8
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0];
+        input.read_exact(&mut val)?;
+        Ok(u8::from_be_bytes(val).zigzag_decode())
     }
 }
 
@@ -407,12 +557,35 @@ impl ByteRepr<2> for i16 {
         i16::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as i8 as i16
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 2];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u16::from_be_bytes(val).zigzag_decode())
     }
 }
 
@@ -422,12 +595,35 @@ impl ByteRepr<4> for i32 {
         i32::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as i8 as i32
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 4];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u32::from_be_bytes(val).zigzag_decode())
     }
 }
 
@@ -437,12 +633,73 @@ impl ByteRepr<8> for i64 {
         i64::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as i8 as i64
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 8];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u64::from_be_bytes(val).zigzag_decode())
+    }
+}
+
+impl ByteRepr<16> for i128 {
+    #[inline]
+    fn to_le_bytes(&self) -> [u8; 16] {
+        i128::to_le_bytes(*self)
+    }
+
+    #[inline]
+    fn truncate_to_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    #[inline]
+    fn from_byte(value: u8) -> Self {
+        value as i128
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 16];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u128::from_be_bytes(val).zigzag_decode())
     }
 }
 
@@ -452,12 +709,24 @@ impl ByteRepr<1> for u8 {
         u8::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0];
+        input.read_exact(&mut val)?;
+        Ok(u8::from_be_bytes(val))
     }
 }
 
@@ -467,12 +736,35 @@ impl ByteRepr<2> for u16 {
         u16::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as u16
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 2];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u16::from_be_bytes(val))
     }
 }
 
@@ -482,12 +774,35 @@ impl ByteRepr<4> for u32 {
         u32::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as u32
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 4];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u32::from_be_bytes(val))
     }
 }
 
@@ -497,12 +812,35 @@ impl ByteRepr<8> for u64 {
         u64::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as u64
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 8];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u64::from_be_bytes(val))
     }
 }
 
@@ -512,12 +850,35 @@ impl ByteRepr<16> for u128 {
         u128::to_le_bytes(*self)
     }
 
+    #[inline]
     fn truncate_to_u8(&self) -> u8 {
         *self as u8
     }
 
+    #[inline]
     fn from_byte(value: u8) -> Self {
         value as u128
+    }
+
+    #[inline]
+    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let mut val = [0; 16];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
+
+        input.read_exact(&mut val[..byte_size])?;
+        Ok(u128::from_be_bytes(val))
     }
 }
 

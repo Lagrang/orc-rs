@@ -58,7 +58,7 @@ pub enum OrcError {
     UnsupportedOrcUnionSubtypes,
     #[error("ORC union malformed: data for the union subtypes is corrupted or missed")]
     MalformedUnion,
-    #[error("Decimal(precision={0},scale={}) is not supported")]
+    #[error("Decimal(precision={0},scale={1}) is not supported")]
     UnsupportedDecimalType(u32, u32),
 }
 

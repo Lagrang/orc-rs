@@ -1,6 +1,7 @@
 use std::io::{ErrorKind, Read};
 use std::ops::{
-    Add, AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign,
+    AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Neg, Not, Shl, ShlAssign, Shr, ShrAssign, Sub,
+    SubAssign,
 };
 
 pub mod rlev1;
@@ -12,6 +13,9 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     + ByteRepr<TYPE_SIZE>
     + PartialEq
     + AddAssign
+    + Sub<Output = Self>
+    + PartialOrd
+    + SubAssign
     + ShrAssign
     + ShlAssign
     + Shl<Output = Self>
@@ -180,7 +184,7 @@ impl Integer<16, 19> for i128 {
 
     #[inline]
     fn overflow_add_i8(&self, other: i8) -> Self {
-        (*self as i128).overflowing_add(other as i128).0
+        (*self).overflowing_add(other as i128).0
     }
 
     fn overflow_add_signed(&self, other: Self::SignedCounterpart) -> Self {
@@ -215,7 +219,7 @@ impl Integer<1, 2> for u8 {
         if other.is_positive() {
             self.overflowing_add(other as u8).0
         } else {
-            self.overflowing_sub(other.abs() as u8).0
+            self.overflowing_sub(other.unsigned_abs()).0
         }
     }
 }
@@ -247,7 +251,7 @@ impl Integer<2, 3> for u16 {
         if other.is_positive() {
             self.overflowing_add(other as u16).0
         } else {
-            self.overflowing_sub(other.abs() as u16).0
+            self.overflowing_sub(other.unsigned_abs()).0
         }
     }
 }
@@ -279,7 +283,7 @@ impl Integer<4, 5> for u32 {
         if other.is_positive() {
             self.overflowing_add(other as u32).0
         } else {
-            self.overflowing_sub(other.abs() as u32).0
+            self.overflowing_sub(other.unsigned_abs()).0
         }
     }
 }
@@ -311,7 +315,7 @@ impl Integer<8, 10> for u64 {
         if other.is_positive() {
             self.overflowing_add(other as u64).0
         } else {
-            self.overflowing_sub(other.abs() as u64).0
+            self.overflowing_sub(other.unsigned_abs()).0
         }
     }
 }
@@ -343,7 +347,7 @@ impl Integer<16, 19> for u128 {
         if other.is_positive() {
             self.overflowing_add(other as u128).0
         } else {
-            self.overflowing_sub(other.abs() as u128).0
+            self.overflowing_sub(other.unsigned_abs()).0
         }
     }
 }
@@ -541,7 +545,7 @@ impl ByteRepr<1> for i8 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_be_bytes(input: &mut dyn Read, _: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -720,7 +724,7 @@ impl ByteRepr<1> for u8 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_be_bytes(input: &mut dyn Read, _: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {

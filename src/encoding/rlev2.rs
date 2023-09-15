@@ -1,6 +1,6 @@
 use std::cmp;
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{Error, Read};
 
 use bytes::{BufMut, BytesMut};
 
@@ -62,6 +62,11 @@ const V2_DIRECT_WIDTH_TABLE: [u8; 32] = [
     30, 32, 40, 48, 56, 64,
 ];
 
+const V2_DELTA_WIDTH_TABLE: [u8; 32] = [
+    0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 28,
+    30, 32, 40, 48, 56, 64,
+];
+
 struct TableCodedValues<'a> {
     coded_data: &'a mut dyn Read,
     bit_width: u8,
@@ -80,10 +85,47 @@ impl<'a> TableCodedValues<'a> {
         const MAX_ENCODED_SIZE: usize,
         IntType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>,
     >(
-        &self,
-        values: usize,
-    ) -> std::io::Result<Vec<IntType>> {
-        Ok(vec![])
+        &mut self,
+        read_count: usize,
+    ) -> crate::Result<Vec<IntType>> {
+        // TODO: unrolled+AVX version of table decoding(see C++ UnpackDefault::readLongs, BitUnpackAVX512::readLongs)
+
+        let zero = IntType::from_byte(0);
+        let one = IntType::from_byte(1);
+        let eight = IntType::from_byte(8);
+        let mut results: Vec<IntType> = Vec::with_capacity(read_count);
+        let mut byte = [0u8; 1];
+        for _ in 0..read_count {
+            let mut result: IntType = IntType::ZERO;
+            let mut total_bits_remains = IntType::from_byte(self.bit_width);
+            let mut byte_bits_remains = IntType::ZERO; // TODO: move to decoder global state with last byte read from RLE
+            while total_bits_remains > byte_bits_remains {
+                result <<= byte_bits_remains;
+                result |= IntType::from_byte(byte[0]) & ((one << byte_bits_remains) - one);
+                total_bits_remains -= byte_bits_remains;
+
+                if self.coded_data.read(&mut byte)? == 0 {
+                    if total_bits_remains > zero {
+                        // Caller expects more values in RLE block than it actually has.
+                        return Err(OrcError::MalformedRleBlock);
+                    }
+                    break;
+                }
+                // New byte were read from the RLE block, reset bit counters
+                byte_bits_remains = eight;
+            }
+
+            if total_bits_remains > zero {
+                result <<= total_bits_remains;
+                byte_bits_remains -= total_bits_remains;
+                result |= (IntType::from_byte(byte[0]) >> byte_bits_remains)
+                    & ((one << byte_bits_remains) - one);
+            }
+
+            results.push(result);
+        }
+
+        Ok(results)
     }
 }
 
@@ -123,7 +165,7 @@ impl RleV2Type {
 
                 // Bits from 5 to 1 contains encoded value width.
                 let width_index = ((first_byte & 0x3E) >> 1) as usize;
-                let bit_width = V2_DIRECT_WIDTH_TABLE[width_index];
+                let bit_width = V2_DELTA_WIDTH_TABLE[width_index];
                 // Least significant bit from first byte + 8 bits of second byte contains
                 // number of values stored in this delta encoded sequence.
                 let mut num_values = ((first_byte & 0x1) as u16) << 8;
@@ -386,13 +428,57 @@ where
 
     fn read_next_block(&mut self) -> crate::Result<bool> {
         self.current_run = RleV2State::parse(&mut self.file_reader)?;
+        Ok(true)
+    }
+}
 
-        match &self.current_run.rle_type {
-            // RleV2Type::ShortRepeat(_, _, bytes) => {}
-            RleV2Type::Delta(_, _, bytes) => {}
-            _ => {}
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use googletest::internal::test_outcome::TestAssertionFailure;
+    use googletest::matchers::{eq, len, ok};
+    use googletest::verify_that;
+
+    use crate::encoding::Integer;
+    use crate::source::MemoryReader;
+
+    use super::IntRleV2Decoder;
+
+    // Set buffer size to min value to test how RLE will behave when minimal data is in memory.
+    const BUFFER_SIZE: usize = 1;
+
+    fn decode_rle_data<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize, IntegerType>(
+        data: Vec<u8>,
+        total_vals_to_read: usize,
+        read_size: usize,
+    ) -> googletest::Result<Vec<IntegerType>>
+    where
+        IntegerType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + arrow::datatypes::ArrowNativeType,
+    {
+        let reader = MemoryReader::from(Bytes::from(data));
+        let mut rle = IntRleV2Decoder::<TYPE_SIZE, MAX_ENCODED_SIZE, _, IntegerType>::new(
+            reader,
+            BUFFER_SIZE,
+        );
+
+        let mut decoded_values = Vec::with_capacity(total_vals_to_read);
+        for _ in (0..total_vals_to_read).step_by(read_size) {
+            let array = rle.read(read_size)?;
+            if let Some(buffer) = array {
+                decoded_values.extend_from_slice(buffer.as_ref());
+            }
         }
 
-        Ok(true)
+        Ok(decoded_values)
+    }
+
+    #[test]
+    fn orc_cpp_backported_basic_delta0() -> googletest::Result<()> {
+        let expected_vals: Vec<i64> = (0..20).collect();
+        let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
+
+        let actual: Vec<i64> = decode_rle_data(data_buffer, expected_vals.len(), 1)?;
+        verify_that!(expected_vals, eq(actual))?;
+        Ok(())
     }
 }

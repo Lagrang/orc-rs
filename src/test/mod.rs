@@ -1,1 +1,2 @@
-pub mod matchers;
+#[cfg(test)]
+pub(crate) mod matchers;

@@ -15,7 +15,7 @@ pub struct StructReader<'a> {
     struct_fields: arrow::datatypes::Fields,
     footer: proto::StripeFooter,
     stripe_meta: proto::StripeInformation,
-    col_chunks: Cell<Vec<(arrow::datatypes::Field, arrow::array::ArrayRef)>>,
+    col_chunks: Cell<Vec<(arrow::datatypes::FieldRef, arrow::array::ArrayRef)>>,
     validity_bitmap: Option<arrow::array::BooleanBufferBuilder>,
 }
 
@@ -39,10 +39,9 @@ impl<'a> StructReader<'a> {
 
 impl<'a> ColumnProcessor for StructReader<'a> {
     fn load_chunk(&mut self, num_values: usize) -> crate::Result<()> {
-        let mut result: Vec<(arrow::datatypes::Field, arrow::array::ArrayRef)> =
+        let mut result: Vec<(arrow::datatypes::FieldRef, arrow::array::ArrayRef)> =
             Vec::with_capacity(self.struct_fields.len());
         for (i, field) in self.struct_fields.iter().enumerate() {
-            let f = field.deref().clone();
             let col_chunk = self.child_readers[i].read(num_values)?;
             if !result.is_empty() && col_chunk.is_none() {
                 return Err(OrcError::ColumnLenNotEqual(
@@ -50,7 +49,7 @@ impl<'a> ColumnProcessor for StructReader<'a> {
                     self.footer.clone(),
                 ));
             }
-            result.push((f, col_chunk.unwrap()));
+            result.push((field.clone(), col_chunk.unwrap()));
         }
         self.col_chunks = Cell::new(result);
         self.validity_bitmap = Some(arrow::array::BooleanBufferBuilder::new(num_values));
@@ -70,7 +69,7 @@ impl<'a> ColumnProcessor for StructReader<'a> {
     fn complete(&mut self) -> crate::Result<arrow::array::ArrayRef> {
         Ok(Arc::new(arrow::array::StructArray::from((
             self.col_chunks.take(),
-            self.validity_bitmap.take().unwrap().finish(),
+            self.validity_bitmap.take().unwrap().into(),
         ))))
     }
 }
@@ -149,7 +148,7 @@ where
                 .len(self.length_chunk.len())
                 .add_buffer(offset_buffer.into_inner())
                 .add_child_data(child_data)
-                .null_bit_buffer(Some(self.validity_bitmap.take().unwrap().finish()))
+                .null_bit_buffer(Some(self.validity_bitmap.take().unwrap().into()))
                 .build_unchecked()
         };
         Ok(Arc::new(arrow::array::ListArray::from(array_data)))

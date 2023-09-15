@@ -1,12 +1,11 @@
 use std::cmp;
-use std::collections::VecDeque;
 use std::io::Read;
 
 use bytes::{BufMut, BytesMut};
 
 use crate::OrcError;
 
-use super::{ByteRepr, Integer, SignedInteger, UnsignedInteger};
+use super::Integer;
 
 struct RleV1State {
     // Index of last element in 'plain' sequence of values
@@ -375,7 +374,8 @@ mod tests {
     use std::ops::Neg;
 
     use bytes::{BufMut, Bytes, BytesMut};
-    use googletest::matchers::eq;
+    use googletest::internal::test_outcome::TestAssertionFailure;
+    use googletest::matchers::{eq, len, ok};
     use googletest::verify_that;
 
     use crate::encoding::Integer;
@@ -386,7 +386,152 @@ mod tests {
     // Set buffer size to min value to test how RLE will behave when minimal data is in memory.
     const BUFFER_SIZE: usize = 1;
 
-    // TODO: add property based tests
+    #[test]
+    fn orc_cpp_backported_simpletest() -> googletest::Result<()> {
+        let buffer = vec![0x61, 0xff, 0x64, 0xfb, 0x02, 0x03, 0x5, 0x7, 0xb];
+        let reader = MemoryReader::from(Bytes::from(buffer));
+        let mut rle = IntRleV1Decoder::<_, u64>::new(reader, BUFFER_SIZE);
+
+        let expected_size = 105;
+        let mut actual = Vec::with_capacity(expected_size);
+        let array = rle.read(expected_size)?;
+        actual.extend_from_slice(&array.ok_or_else(|| TestAssertionFailure {
+            description: "No values returned by RLE".to_string(),
+            custom_message: None,
+        })?);
+
+        // Check that no more data in RLE stream
+        verify_that!(rle.read(1), ok(eq(None)))?;
+
+        verify_that!(actual, len(eq(expected_size)))?;
+
+        for (i, val) in actual[..100].iter().enumerate() {
+            let idx = i as u64;
+            verify_that!(*val, eq(100 - idx))?;
+        }
+
+        verify_that!(actual[100], eq(2))?;
+        verify_that!(actual[101], eq(3))?;
+        verify_that!(actual[102], eq(5))?;
+        verify_that!(actual[103], eq(7))?;
+        verify_that!(actual[104], eq(11))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_signed_null_literal_test() -> googletest::Result<()> {
+        let buffer = vec![0xf8, 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7];
+        let reader = MemoryReader::from(Bytes::from(buffer));
+        let mut rle = IntRleV1Decoder::<_, i64>::new(reader, BUFFER_SIZE);
+
+        let expected_size = 8;
+        let mut actual = Vec::with_capacity(expected_size);
+        let array = rle.read(expected_size)?;
+        actual.extend_from_slice(&array.ok_or_else(|| TestAssertionFailure {
+            description: "No values returned by RLE".to_string(),
+            custom_message: None,
+        })?);
+
+        // Check that no more data in RLE stream
+        verify_that!(rle.read(1), ok(eq(None)))?;
+
+        verify_that!(actual, len(eq(expected_size)))?;
+
+        for (i, val) in actual.iter().enumerate() {
+            let idx = i as i64;
+            if i % 2 == 0 {
+                verify_that!(*val, eq(idx / 2))?;
+            } else {
+                verify_that!(*val, eq(-((idx + 1) / 2)))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_split_header() -> googletest::Result<()> {
+        let buffer = vec![0x0, 0x00, 0xdc, 0xba, 0x98, 0x76];
+        let reader = MemoryReader::from(Bytes::from(buffer));
+        let mut rle = IntRleV1Decoder::<_, u64>::new(reader, BUFFER_SIZE);
+
+        let expected_size = 3;
+        let mut actual = Vec::with_capacity(expected_size);
+        let array = rle.read(expected_size)?;
+        actual.extend_from_slice(&array.ok_or_else(|| TestAssertionFailure {
+            description: "No values returned by RLE".to_string(),
+            custom_message: None,
+        })?);
+
+        // Check that no more data in RLE stream
+        verify_that!(rle.read(1), ok(eq(None)))?;
+
+        verify_that!(actual, len(eq(expected_size)))?;
+
+        for val in actual.iter() {
+            verify_that!(*val, eq(247864668))?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_split_runs() -> googletest::Result<()> {
+        let buffer = vec![0x7d, 0x01, 0xff, 0x01, 0xfb, 0x01, 0x02, 0x03, 0x04, 0x05];
+        let reader = MemoryReader::from(Bytes::from(buffer));
+        let mut rle = IntRleV1Decoder::<_, u64>::new(reader, BUFFER_SIZE);
+
+        let expected_size = 3;
+        for i in 0..42 {
+            let mut actual = Vec::with_capacity(expected_size);
+            let array = rle.read(expected_size)?;
+            actual.extend_from_slice(&array.ok_or_else(|| TestAssertionFailure {
+                description: "No values returned by RLE".to_string(),
+                custom_message: None,
+            })?);
+
+            for (j, val) in actual.iter().enumerate() {
+                verify_that!(*val, eq(255 + (i as u64) * 3 + (j as u64)))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_test_signed() -> googletest::Result<()> {
+        let buffer = vec![0x7f, 0xff, 0x20];
+        let reader = MemoryReader::from(Bytes::from(buffer));
+        let mut rle = IntRleV1Decoder::<_, i64>::new(reader, BUFFER_SIZE);
+
+        {
+            let expected_size = 100;
+            let mut actual = Vec::with_capacity(expected_size);
+            let array = rle.read(expected_size)?;
+            actual.extend_from_slice(&array.ok_or_else(|| TestAssertionFailure {
+                description: "No values returned by RLE".to_string(),
+                custom_message: None,
+            })?);
+            for (i, val) in actual.iter().enumerate() {
+                verify_that!(*val, eq(16 - (i as i64)))?;
+            }
+        }
+        {
+            let expected_size = 30;
+            let mut actual = Vec::with_capacity(expected_size);
+            let array = rle.read(expected_size)?;
+            actual.extend_from_slice(&array.ok_or_else(|| TestAssertionFailure {
+                description: "No values returned by RLE".to_string(),
+                custom_message: None,
+            })?);
+            for (i, val) in actual.iter().enumerate() {
+                verify_that!(*val, eq(16 - 100 - (i as i64)))?;
+            }
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn byte_rle_sequence() -> googletest::Result<()> {

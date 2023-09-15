@@ -5,12 +5,12 @@ edition = "2021"
 
 [dependencies]
 bytes = "1.2.1"
-prost = "0.11.2"
-arrow = "37.0.0"
+prost = "0.12.0"
+arrow = "46.0.0"
 snap = "1.1.0"
 zstd = "0.12.1+zstd.1.5.2"
-lz4_flex = { version = "0.10.0", default-features = false, features = [
-    "checked-decode",
+lz4_flex = { version = "0.11.1", default-features = false, features = [
+    # "checked-decode",
     "frame",
 ] }
 flate2 = "1.0.25"
@@ -19,10 +19,10 @@ chrono = "0.4.24"
 chrono-tz = "0.8.2"
 
 [dev-dependencies]
-googletest = "0.5.0"
+googletest = "0.10.0"
 similar = "2.2.1"
 colored = "2"
 tempfile = "3.5.0"
 
 [build-dependencies]
-prost-build = { version = "0.11.0" }
+prost-build = { version = "0.12.0" }

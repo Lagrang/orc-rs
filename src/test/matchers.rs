@@ -13,12 +13,14 @@ use googletest::verify_that;
 
 use crate::tail::FileTail;
 
-pub struct HashMapMatcher<K, V> {
+pub(crate) struct HashMapMatcher<K, V> {
     expected: HashMap<K, V>,
     err_msg: Cell<String>,
 }
 
-impl<K: Debug + Eq + Hash, V: Debug + PartialEq> Matcher<HashMap<K, V>> for HashMapMatcher<K, V> {
+impl<K: Debug + Eq + Hash, V: Debug + PartialEq> Matcher for HashMapMatcher<K, V> {
+    type ActualT = HashMap<K, V>;
+
     fn matches(&self, actual: &HashMap<K, V>) -> MatcherResult {
         if self.expected.len() != actual.len() {
             self.err_msg.set(format!(
@@ -26,26 +28,26 @@ impl<K: Debug + Eq + Hash, V: Debug + PartialEq> Matcher<HashMap<K, V>> for Hash
                 self.expected.len(),
                 actual.len()
             ));
-            return MatcherResult::DoesNotMatch;
+            return MatcherResult::NoMatch;
         }
 
         for (key, val) in actual.iter() {
             if let Some(other_val) = self.expected.get(key) {
                 if val != other_val {
-                    return MatcherResult::DoesNotMatch;
+                    return MatcherResult::NoMatch;
                 }
             } else {
-                return MatcherResult::DoesNotMatch;
+                return MatcherResult::NoMatch;
             }
         }
 
-        MatcherResult::Matches
+        MatcherResult::Match
     }
 
     fn describe(&self, matcher_result: MatcherResult) -> String {
         match matcher_result {
-            MatcherResult::Matches => format!("is same as {:?}", self.expected),
-            MatcherResult::DoesNotMatch => {
+            MatcherResult::Match => format!("is same as {:?}", self.expected),
+            MatcherResult::NoMatch => {
                 format!(
                     "Hashmap is not the same as expected: {}.",
                     self.err_msg.take()
@@ -55,7 +57,7 @@ impl<K: Debug + Eq + Hash, V: Debug + PartialEq> Matcher<HashMap<K, V>> for Hash
     }
 }
 
-pub fn hashmap_eq<K: Clone, V: Clone>(expected: &HashMap<K, V>) -> HashMapMatcher<K, V> {
+pub(crate) fn hashmap_eq<K: Clone, V: Clone>(expected: &HashMap<K, V>) -> HashMapMatcher<K, V> {
     HashMapMatcher {
         expected: expected.clone(),
         err_msg: Cell::default(),
@@ -76,46 +78,50 @@ pub fn diff<L: Debug, R: Debug>(left: &L, right: &R) -> String {
         .fold(String::new(), |a, b| format!("{a}{b}"))
 }
 
-pub struct ArrowSchemaMatcher {
+pub(crate) struct ArrowSchemaMatcher {
     expected: Arc<arrow::datatypes::Schema>,
     diff: Cell<String>,
 }
 
-impl Matcher<Arc<arrow::datatypes::Schema>> for ArrowSchemaMatcher {
+impl Matcher for ArrowSchemaMatcher {
+    type ActualT = Arc<arrow::datatypes::Schema>;
+
     fn matches(&self, actual: &Arc<arrow::datatypes::Schema>) -> MatcherResult {
         if &self.expected == actual {
-            MatcherResult::Matches
+            MatcherResult::Match
         } else {
             self.diff.set(diff(
                 &format!("{:?}", self.expected),
                 &format!("{:?}", actual),
             ));
-            MatcherResult::DoesNotMatch
+            MatcherResult::NoMatch
         }
     }
 
     fn describe(&self, matcher_result: MatcherResult) -> String {
         match matcher_result {
-            MatcherResult::DoesNotMatch => format!("Schema is different:\n{}", self.diff.take()),
-            MatcherResult::Matches => "Schemas are equal.".to_owned(),
+            MatcherResult::NoMatch => format!("Schema is different:\n{}", self.diff.take()),
+            MatcherResult::Match => "Schemas are equal.".to_owned(),
         }
     }
 }
 
-pub fn arrow_schema_eq(expected: Arc<arrow::datatypes::Schema>) -> ArrowSchemaMatcher {
+pub(crate) fn arrow_schema_eq(expected: Arc<arrow::datatypes::Schema>) -> ArrowSchemaMatcher {
     ArrowSchemaMatcher {
         expected: expected.clone(),
         diff: Cell::default(),
     }
 }
 
-pub struct FileTailMatcher {
+pub(crate) struct FileTailMatcher {
     expected: FileTail,
     diff: Cell<String>,
     err_msg: Cell<String>,
 }
 
-impl Matcher<FileTail> for FileTailMatcher {
+impl Matcher for FileTailMatcher {
+    type ActualT = FileTail;
+
     fn matches(&self, actual: &FileTail) -> MatcherResult {
         let result = verify_that!(self.expected.content_size, eq(actual.content_size))
             .and(verify_that!(
@@ -152,14 +158,14 @@ impl Matcher<FileTail> for FileTailMatcher {
         }
 
         result
-            .map(|_| MatcherResult::Matches)
-            .unwrap_or(MatcherResult::DoesNotMatch)
+            .map(|_| MatcherResult::Match)
+            .unwrap_or(MatcherResult::NoMatch)
     }
 
     fn describe(&self, matcher_result: MatcherResult) -> String {
         match matcher_result {
-            MatcherResult::Matches => format!("is same as {:?}", self.expected),
-            MatcherResult::DoesNotMatch => {
+            MatcherResult::Match => format!("is same as {:?}", self.expected),
+            MatcherResult::NoMatch => {
                 format!(
                     " is not the same as expected: {}.
                         Diff:

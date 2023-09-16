@@ -4,11 +4,14 @@ use std::ops::{
     SubAssign,
 };
 
-use self::rlev1::IntRleV1Decoder;
-use self::rlev2::IntRleV2Decoder;
+mod rlev1;
+mod rlev2;
 
-pub mod rlev1;
-pub mod rlev2;
+pub(crate) use crate::encoding::rlev1::BooleanRleDecoder;
+pub(crate) use crate::encoding::rlev1::ByteRleDecoder;
+
+use crate::encoding::rlev1::IntRleV1Decoder;
+use crate::encoding::rlev2::IntRleV2Decoder;
 
 pub(crate) struct IntRleDecoder<const N: usize, const M: usize, Input, IntType>
 where
@@ -63,9 +66,9 @@ where
     }
 }
 
-/// Marker trait for integer types.
+/// Marker trait for signed integer types.
 /// Trait is used for RLE decoding to indicate the datatype of RLE data.
-pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
+pub trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     Copy
     + ByteRepr<TYPE_SIZE>
     + PartialEq
@@ -91,7 +94,7 @@ pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     type UnsignedCounterpart: UnsignedInteger<TYPE_SIZE, MAX_ENCODED_SIZE>;
     /// Type represent signed counterpart of this type, e.g. u8 => i8.
     /// If type is signed, represents itself.
-    type SignedCounterpart: Integer<TYPE_SIZE, MAX_ENCODED_SIZE>;
+    type SignedCounterpart: SignedInteger<TYPE_SIZE, MAX_ENCODED_SIZE>;
 
     /// Encode integer as 'base 128 varint' value.
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#varints).
@@ -409,7 +412,7 @@ impl Integer<16, 19> for u128 {
     }
 }
 
-pub(crate) trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
+pub trait UnsignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     Integer<TYPE_SIZE, MAX_ENCODED_SIZE>
 {
     /// Value which contains a mask used by varint encoder/decoder.
@@ -532,13 +535,20 @@ impl UnsignedInteger<16, 19> for u128 {
     }
 }
 
-pub(crate) trait SignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
-    Integer<TYPE_SIZE, MAX_ENCODED_SIZE>
+pub trait SignedInteger<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
+    Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + Neg<Output = Self>
 {
     /// Encode value using Zigzag algorithm.
     ///
     /// Description can be found [here](https://protobuf.dev/programming-guides/encoding/#signed-ints)
     fn zigzag_encode(&self) -> Self::UnsignedCounterpart;
+
+    fn negate(&self) -> Self
+    where
+        Self: Neg<Output = Self>,
+    {
+        self.neg()
+    }
 }
 
 impl SignedInteger<1, 2> for i8 {
@@ -576,7 +586,7 @@ impl SignedInteger<16, 19> for i128 {
     }
 }
 
-pub(crate) trait ByteRepr<const N: usize> {
+pub trait ByteRepr<const N: usize> {
     fn to_le_bytes(&self) -> [u8; N];
     fn truncate_to_u8(&self) -> u8;
     fn from_byte(value: u8) -> Self;

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use crate::encoding::rlev1::ByteRleDecoder;
-use crate::encoding::{IntRleDecoder, Integer, UnsignedInteger};
+use crate::encoding::{ByteRleDecoder, IntRleDecoder, Integer, UnsignedInteger};
 use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};

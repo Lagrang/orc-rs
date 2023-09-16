@@ -1,7 +1,6 @@
-use std::num;
 use std::sync::Arc;
 
-use crate::encoding::rlev1::BooleanRleDecoder;
+use crate::encoding::BooleanRleDecoder;
 use crate::{io_utils, OrcError};
 
 use super::ColumnProcessor;

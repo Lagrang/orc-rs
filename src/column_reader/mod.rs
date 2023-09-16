@@ -4,7 +4,7 @@ mod complex_type_reader;
 mod datetime_reader;
 mod numeric_reader;
 
-use crate::encoding::rlev1::BooleanRleDecoder;
+use crate::encoding::BooleanRleDecoder;
 use crate::encoding::{IntRleDecoder, Integer};
 use crate::io_utils::{self};
 use crate::schema::OrcColumnId;

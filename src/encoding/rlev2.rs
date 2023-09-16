@@ -6,7 +6,7 @@ use bytes::{BufMut, BytesMut};
 
 use crate::OrcError;
 
-use super::Integer;
+use super::{Integer, SignedInteger};
 
 #[derive(Copy, Clone)]
 enum RleV2Type {
@@ -142,7 +142,7 @@ impl RleV2Type {
 
         let first_byte = first_byte[0];
 
-        match first_byte >> 6 {
+        match (first_byte >> 6) & 0x03 {
             0 => {
                 let width = ((first_byte & 0x3F) >> 3) + 1;
                 let repeat_cnt = (first_byte & 0x7) + 3;
@@ -255,21 +255,26 @@ where
             }
             Some(v2_type @ RleV2Type::Delta(bit_width, num_values, _)) => {
                 let base_value = IntType::from_varint(rle_bytes)?.0;
-                let delta = IntType::SignedCounterpart::from_varint(rle_bytes)?.0;
-                let mut deltas = Vec::new();
+                let base_delta = IntType::SignedCounterpart::from_varint(rle_bytes)?.0;
+                let mut deltas = vec![base_delta];
                 if bit_width > 0 {
-                    deltas.push(delta);
-                    deltas.append(
-                        &mut TableCodedValues::new(rle_bytes, bit_width)
-                            .decode(num_values as usize - 2)?,
-                    );
+                    let mut next_deltas: Vec<IntType::SignedCounterpart> =
+                        TableCodedValues::new(rle_bytes, bit_width)
+                            .decode(num_values as usize - 2)?;
+                    // If base delta is negative, when all following deltas should be negative too.
+                    if base_delta < IntType::SignedCounterpart::ZERO {
+                        for v in &mut next_deltas {
+                            *v = v.negate();
+                        }
+                    }
+                    deltas.append(&mut next_deltas);
                 }
                 Some(Self {
                     length: num_values as usize,
                     consumed: 0,
                     rle_type: v2_type,
                     base_value,
-                    delta_base: delta,
+                    delta_base: base_delta,
                     deltas: VecDeque::from(deltas),
                     decoded_values: VecDeque::new(),
                 })
@@ -302,7 +307,7 @@ where
     }
 }
 
-pub(crate) struct IntRleV2Decoder<
+pub struct IntRleV2Decoder<
     const TYPE_SIZE: usize,
     const MAX_ENCODED_SIZE: usize,
     Input,
@@ -548,6 +553,63 @@ mod tests {
         let actual: Vec<i64> =
             decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
         verify_that!(expected_vals, eq(actual))?;
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_basic_delta4() -> googletest::Result<()> {
+        let expected_vals: Vec<i64> = vec![500, 600, 650, 675, 710];
+        let data_buffer = vec![0xce, 0x04, 0xe8, 0x07, 0xc8, 0x01, 0x32, 0x19, 0x23];
+
+        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
+        verify_that!(expected_vals, eq(actual))?;
+        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
+        verify_that!(expected_vals, eq(actual))?;
+        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
+        verify_that!(expected_vals, eq(actual))?;
+        let actual: Vec<i64> =
+            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
+        verify_that!(expected_vals, eq(actual))?;
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_basic_delta5() -> googletest::Result<()> {
+        let mut expected_vals: Vec<i64> = Vec::with_capacity(65);
+        for i in 0..65 {
+            expected_vals.push(i - 32);
+        }
+        // Original values: [-32, -31, -30, ..., -1, 0, 1, 2, ..., 32]
+        // 2 bytes header: 0xc0, 0x40
+        //    2 bits for encoding type(3). 5 bits for bitSize which is 0 for fixed delta.
+        //    9 bits for length of 65(64).
+        // Base value: -32 which is 65(0x3f) after zigzag
+        // Delta base: 1 which is 2(0x02) after zigzag
+        let data_buffer = vec![0xc0, 0x40, 0x3f, 0x02];
+
+        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
+        verify_that!(expected_vals, eq(actual))?;
+        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
+        verify_that!(expected_vals, eq(actual))?;
+        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
+        verify_that!(expected_vals, eq(actual))?;
+        let actual: Vec<i64> =
+            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
+        verify_that!(expected_vals, eq(actual))?;
+        Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_basic_delta0_width() -> googletest::Result<()> {
+        let data_buffer = vec![0x4e, 0x2, 0x0, 0x1, 0x2, 0xc0, 0x2, 0x42, 0x0];
+
+        let actual: Vec<i64> = decode_rle_data(data_buffer, 6, 6)?;
+        verify_that!(0, eq(actual[0]))?;
+        verify_that!(1, eq(actual[1]))?;
+        verify_that!(2, eq(actual[2]))?;
+        verify_that!(0x42, eq(actual[3]))?;
+        verify_that!(0x42, eq(actual[4]))?;
+        verify_that!(0x42, eq(actual[5]))?;
         Ok(())
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::UnionFields;
 
-use crate::encoding::rlev1::ByteRleDecoder;
+use crate::encoding::ByteRleDecoder;
 use crate::encoding::IntRleDecoder;
 use crate::{proto, OrcError};
 

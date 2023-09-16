@@ -157,7 +157,7 @@ impl<Input: std::io::Read> ByteRleDecoder<Input> {
     }
 }
 
-pub(crate) struct BooleanRleDecoder<Input> {
+pub struct BooleanRleDecoder<Input> {
     rle: ByteRleDecoder<Input>,
     completed: bool,
 }
@@ -208,7 +208,7 @@ impl<Input: std::io::Read> BooleanRleDecoder<Input> {
 /// of literals in the sequence. Following the header byte, the list of N varints is encoded.
 /// Thus, if there are no runs, the overhead is 1 byte for each 128 integers.
 /// Numbers [2, 3, 6, 7, 11] would be encoded as [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb].
-pub(crate) struct IntRleV1Decoder<Input, IntType> {
+pub struct IntRleV1Decoder<Input, IntType> {
     file_reader: std::io::BufReader<Input>,
     completed: bool,
     // State of current run.

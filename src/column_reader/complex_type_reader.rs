@@ -1,11 +1,11 @@
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
 use arrow::datatypes::UnionFields;
 
-use crate::encoding::rlev1::{ByteRleDecoder, IntRleDecoder};
+use crate::encoding::rlev1::ByteRleDecoder;
+use crate::encoding::IntRleDecoder;
 use crate::{proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor, ColumnReader};
@@ -77,7 +77,7 @@ impl<'a> ColumnProcessor for StructReader<'a> {
 pub struct ListReader<'a, RleInput> {
     data_type: arrow::datatypes::DataType,
     data: Box<dyn ColumnReader + 'a>,
-    length_rle: IntRleDecoder<RleInput, u64>,
+    length_rle: IntRleDecoder<8, 10, RleInput, u64>,
     length_chunk: arrow::buffer::ScalarBuffer<u64>,
     validity_bitmap: Option<arrow::array::BooleanBufferBuilder>,
 }

@@ -14,6 +14,9 @@ pub mod column_reader;
 pub mod compression;
 pub mod reader;
 pub mod source;
+use std::backtrace::{self};
+use std::io;
+
 pub use reader::new_reader;
 use thiserror::Error;
 
@@ -21,8 +24,8 @@ type Result<T> = std::result::Result<T, OrcError>;
 
 #[derive(Error, Debug)]
 pub enum OrcError {
-    #[error("IO error: kind={0}, message={1}")]
-    IoError(std::io::ErrorKind, String),
+    #[error("IO error: type={:?}, message={:?}\n{:?}", err.kind(), err.to_string(), backtrace)]
+    IoError { err: io::Error, backtrace: String },
     #[error("Stripe index {0} is out of bound ({1} stripe(s) in the file)")]
     InvalidStripeIndex(usize, usize),
     #[error("ORC file is too short, only {0} bytes")]
@@ -62,9 +65,12 @@ pub enum OrcError {
     UnsupportedDecimalType(u32, u32),
 }
 
-impl From<std::io::Error> for OrcError {
-    fn from(e: std::io::Error) -> Self {
-        OrcError::IoError(e.kind(), e.to_string())
+impl From<io::Error> for OrcError {
+    fn from(e: io::Error) -> Self {
+        OrcError::IoError {
+            err: e,
+            backtrace: backtrace::Backtrace::capture().to_string(),
+        }
     }
 }
 

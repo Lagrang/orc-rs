@@ -1,14 +1,13 @@
 use std::io::Read;
-use std::num;
 use std::sync::Arc;
 
-use crate::encoding::rlev1::IntRleDecoder;
+use crate::encoding::IntRleDecoder;
 use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};
 
 pub struct BinaryReader<RleInput, Input> {
-    length_rle: IntRleDecoder<RleInput, i64>,
+    length_rle: IntRleDecoder<8, 10, RleInput, i64>,
     data: std::io::BufReader<Input>,
     buffers: Vec<bytes::Bytes>,
     result_builder: Option<arrow::array::BinaryBuilder>,
@@ -78,7 +77,7 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
 }
 
 pub struct StringReader<RleInput, Input> {
-    length_rle: IntRleDecoder<RleInput, u64>,
+    length_rle: IntRleDecoder<8, 10, RleInput, u64>,
     data: std::io::BufReader<Input>,
     strings: Vec<String>,
     result_builder: Option<arrow::array::StringBuilder>,
@@ -153,7 +152,7 @@ impl<RleStream: io_utils::BufRead, DataStream: std::io::Read> ColumnProcessor
 }
 
 pub struct StringDictionaryReader<RleInput> {
-    dict_rle: IntRleDecoder<RleInput, u32>,
+    dict_rle: IntRleDecoder<4, 5, RleInput, u32>,
     buffer: arrow::buffer::ScalarBuffer<u32>,
     dict_values: arrow::array::StringArray,
     result_builder: Option<arrow::array::StringDictionaryBuilder<arrow::datatypes::UInt32Type>>,
@@ -171,7 +170,7 @@ where
         encoding: &proto::ColumnEncoding,
     ) -> crate::Result<Self> {
         let dict_size = encoding.dictionary_size() as usize;
-        let mut len_rle: IntRleDecoder<RleStream, u32> =
+        let mut len_rle: IntRleDecoder<4, 5, RleStream, u32> =
             create_int_rle(length_stream, buffer_size, encoding);
         let sizes = len_rle
             .read(dict_size)?

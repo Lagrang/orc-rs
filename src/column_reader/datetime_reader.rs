@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::TimeZone;
 
-use crate::encoding::rlev1::IntRleDecoder;
+use crate::encoding::IntRleDecoder;
 use crate::io_utils::{self};
 use crate::{proto, OrcError};
 
@@ -10,8 +10,8 @@ use super::{create_int_rle, ColumnProcessor};
 
 pub struct TimestampReader<Input> {
     time_offset: chrono::Duration,
-    seconds_rle: IntRleDecoder<Input, i64>,
-    nanos_rle: IntRleDecoder<Input, u64>,
+    seconds_rle: IntRleDecoder<8, 10, Input, i64>,
+    nanos_rle: IntRleDecoder<8, 10, Input, u64>,
     seconds_chunk: Option<arrow::buffer::ScalarBuffer<i64>>,
     nanos_chunk: Option<arrow::buffer::ScalarBuffer<u64>>,
     result_builder: Option<arrow::array::TimestampNanosecondBuilder>,
@@ -91,7 +91,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for TimestampReader<DataStre
 }
 
 pub struct DateReader<Input> {
-    rle: IntRleDecoder<Input, i64>,
+    rle: IntRleDecoder<8, 10, Input, i64>,
     data_chunk: Option<arrow::buffer::ScalarBuffer<i64>>,
     result_builder: Option<arrow::array::Date64Builder>,
 }

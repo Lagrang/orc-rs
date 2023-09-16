@@ -4,12 +4,12 @@ mod complex_type_reader;
 mod datetime_reader;
 mod numeric_reader;
 
-use crate::encoding::rlev1::{BooleanRleDecoder, IntRleDecoder, IntRleV1Decoder};
-use crate::encoding::Integer;
+use crate::encoding::rlev1::BooleanRleDecoder;
+use crate::encoding::{IntRleDecoder, Integer};
 use crate::io_utils::{self};
 use crate::schema::OrcColumnId;
 use crate::source::OrcFile;
-use crate::{compression, proto, schema, OrcError, Result};
+use crate::{compression, proto, OrcError, Result};
 
 use arrow::datatypes::DataType;
 
@@ -279,7 +279,7 @@ fn open_stream_reader<'a>(
         if s.column() == col_id && s.kind() == stream_kind {
             return compression
                 .new_reader(orc_file, offset, s.length())
-                .map_err(|e| OrcError::IoError(e.kind(), e.to_string()));
+                .map_err(|e| OrcError::from(e));
         }
         offset += s.length();
     }
@@ -380,20 +380,17 @@ fn create_int_rle<const N: usize, const M: usize, Input, IntType>(
     data_stream: Input,
     buffer_size: usize,
     encoding: &proto::ColumnEncoding,
-) -> IntRleDecoder<Input, IntType>
+) -> IntRleDecoder<N, M, Input, IntType>
 where
     IntType: Integer<N, M>,
     Input: std::io::Read,
 {
     match encoding.kind() {
         proto::column_encoding::Kind::Direct | proto::column_encoding::Kind::Dictionary => {
-            IntRleDecoder::new_v1(IntRleV1Decoder::<Input, IntType>::new(
-                data_stream,
-                buffer_size,
-            ))
+            IntRleDecoder::new_v1(data_stream, buffer_size)
         }
         proto::column_encoding::Kind::DirectV2 | proto::column_encoding::Kind::DictionaryV2 => {
-            todo!()
+            IntRleDecoder::new_v2(data_stream, buffer_size)
         }
     }
 }

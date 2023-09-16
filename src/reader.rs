@@ -85,7 +85,7 @@ impl ReaderImpl {
         let mut tail_reader = FileMetadataReader::new(
             orc_file
                 .positional_reader()
-                .map_err(|e| OrcError::IoError(e.kind(), e.to_string()))?,
+                .map_err(|e| OrcError::from(e))?,
         )?;
 
         let (tail, compression) = tail_reader.read_tail(opts.compression_codecs)?;

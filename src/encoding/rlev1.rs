@@ -188,35 +188,6 @@ impl<Input: std::io::Read> BooleanRleDecoder<Input> {
     }
 }
 
-pub(crate) struct IntRleDecoder<Input, IntType> {
-    v1: Option<IntRleV1Decoder<Input, IntType>>,
-    v2: Option<IntRleV1Decoder<Input, IntType>>,
-}
-
-impl<Input, IntType> IntRleDecoder<Input, IntType> {
-    pub fn new_v1(v1: IntRleV1Decoder<Input, IntType>) -> Self {
-        Self {
-            v1: Some(v1),
-            v2: None,
-        }
-    }
-
-    pub fn read<const N: usize, const M: usize>(
-        &mut self,
-        batch_size: usize,
-    ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
-    where
-        IntType: Integer<N, M> + arrow::datatypes::ArrowNativeType,
-        Input: std::io::Read,
-    {
-        self.v1
-            .as_mut()
-            .or(self.v2.as_mut())
-            .unwrap()
-            .read(batch_size)
-    }
-}
-
 /// In Hive 0.11 ORC files used Run Length Encoding version 1 (RLEv1), which provides
 /// a lightweight compression of signed or unsigned integer sequences.
 ///

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::encoding::rlev1::{ByteRleDecoder, IntRleDecoder};
-use crate::encoding::{Integer, UnsignedInteger};
+use crate::encoding::rlev1::ByteRleDecoder;
+use crate::encoding::{IntRleDecoder, Integer, UnsignedInteger};
 use crate::{io_utils, proto, OrcError};
 
 use super::{create_int_rle, ColumnProcessor};
@@ -56,7 +56,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int8Reader<DataStream> {
 }
 
 pub struct Int16Reader<Input> {
-    rle: IntRleDecoder<Input, i16>,
+    rle: IntRleDecoder<2, 3, Input, i16>,
     data_chunk: Option<arrow::buffer::ScalarBuffer<i16>>,
     result_builder: Option<arrow::array::Int16Builder>,
 }
@@ -107,7 +107,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int16Reader<DataStream> 
 }
 
 pub struct Int32Reader<Input> {
-    rle: IntRleDecoder<Input, i32>,
+    rle: IntRleDecoder<4, 5, Input, i32>,
     /// Data chunk buffer. Contain values which are not a NULL.
     data_chunk: Option<arrow::buffer::ScalarBuffer<i32>>,
     /// Builder for a data array which will be returned to the user.
@@ -160,7 +160,7 @@ impl<DataStream: io_utils::BufRead> ColumnProcessor for Int32Reader<DataStream> 
 }
 
 pub struct Int64Reader<Input> {
-    rle: IntRleDecoder<Input, i64>,
+    rle: IntRleDecoder<8, 10, Input, i64>,
     data_chunk: Option<arrow::buffer::ScalarBuffer<i64>>,
     result_builder: Option<arrow::array::Int64Builder>,
 }
@@ -317,7 +317,7 @@ pub struct Decimal128Reader<Input> {
     scale: u8,
     data_stream: std::io::BufReader<Input>,
     // Scale RLE is signed
-    scale_rle: IntRleDecoder<Input, i8>,
+    scale_rle: IntRleDecoder<1, 2, Input, i8>,
     scale_chunk: arrow::buffer::ScalarBuffer<i8>,
     result_builder: Option<arrow::array::Decimal128Builder>,
 }

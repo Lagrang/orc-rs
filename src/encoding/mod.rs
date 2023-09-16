@@ -4,10 +4,67 @@ use std::ops::{
     SubAssign,
 };
 
+use self::rlev1::IntRleV1Decoder;
+use self::rlev2::IntRleV2Decoder;
+
 pub mod rlev1;
 pub mod rlev2;
 
-/// Marker trait for signed integer types.
+pub(crate) struct IntRleDecoder<const N: usize, const M: usize, Input, IntType>
+where
+    IntType: Integer<N, M>,
+{
+    v1: Option<IntRleV1Decoder<Input, IntType>>,
+    v2: Option<IntRleV2Decoder<N, M, Input, IntType>>,
+}
+
+impl<const N: usize, const M: usize, Input, IntType> IntRleDecoder<N, M, Input, IntType>
+where
+    IntType: Integer<N, M>,
+{
+    pub fn new_v1(data_stream: Input, buffer_size: usize) -> Self
+    where
+        Input: std::io::Read,
+    {
+        Self {
+            v1: Some(IntRleV1Decoder::<Input, IntType>::new(
+                data_stream,
+                buffer_size,
+            )),
+            v2: None,
+        }
+    }
+
+    pub fn new_v2(data_stream: Input, buffer_size: usize) -> Self
+    where
+        Input: std::io::Read,
+    {
+        Self {
+            v1: None,
+            v2: Some(IntRleV2Decoder::new(data_stream, buffer_size)),
+        }
+    }
+
+    pub fn read(
+        &mut self,
+        batch_size: usize,
+    ) -> crate::Result<Option<arrow::buffer::ScalarBuffer<IntType>>>
+    where
+        IntType: arrow::datatypes::ArrowNativeType,
+        Input: std::io::Read,
+    {
+        if let Some(v1) = self.v1.as_mut() {
+            v1.read(batch_size)
+        } else if let Some(v2) = self.v2.as_mut() {
+            v2.read(batch_size)
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+/// Marker trait for integer types.
+/// Trait is used for RLE decoding to indicate the datatype of RLE data.
 pub(crate) trait Integer<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize>:
     Copy
     + ByteRepr<TYPE_SIZE>
@@ -682,7 +739,7 @@ impl ByteRepr<16> for i128 {
 
     #[inline]
     fn from_byte(value: u8) -> Self {
-        value as i128
+        value as i8 as i128
     }
 
     #[inline]

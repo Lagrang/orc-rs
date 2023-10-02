@@ -229,7 +229,8 @@ where
         let rle_type = RleV2Type::parse(rle_bytes)?;
         let state = match rle_type {
             Some(v2_type @ RleV2Type::ShortRepeat(byte_width, repeat_count)) => {
-                let repeated_value = IntType::from_coded_be_bytes(rle_bytes, byte_width as usize)?;
+                let repeated_value =
+                    IntType::from_coded_big_endian(rle_bytes, byte_width as usize)?;
                 Some(Self {
                     length: repeat_count as usize,
                     consumed: 0,
@@ -488,89 +489,83 @@ mod tests {
         Ok(decoded_values)
     }
 
+    fn verify_decoding<const TYPE_SIZE: usize, const MAX_ENCODED_SIZE: usize, IntegerType>(
+        data_buffer: Vec<u8>,
+        expected_vals: Vec<IntegerType>,
+    ) -> googletest::Result<()>
+    where
+        IntegerType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + arrow::datatypes::ArrowNativeType,
+    {
+        let actual: Vec<IntegerType> =
+            decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
+        verify_that!(actual, eq(expected_vals.clone()))?;
+        let actual: Vec<IntegerType> =
+            decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
+        verify_that!(actual, eq(expected_vals.clone()))?;
+        let actual: Vec<IntegerType> =
+            decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
+        verify_that!(actual, eq(expected_vals.clone()))?;
+        let actual: Vec<IntegerType> =
+            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
+        verify_that!(actual, eq(expected_vals))?;
+        Ok(())
+    }
+
     #[test]
     fn orc_cpp_backported_basic_delta0() -> googletest::Result<()> {
-        let expected_vals: Vec<i64> = (0..20).collect();
-        let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
-
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> =
-            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
-        verify_that!(expected_vals, eq(actual))?;
-        Ok(())
+        {
+            let expected_vals: Vec<i8> = (0..20).collect();
+            let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
+            verify_decoding(data_buffer, expected_vals)?;
+        }
+        {
+            let expected_vals: Vec<i16> = (0..20).collect();
+            let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
+            verify_decoding(data_buffer, expected_vals)?;
+        }
+        {
+            let expected_vals: Vec<i32> = (0..20).collect();
+            let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
+            verify_decoding(data_buffer, expected_vals)?;
+        }
+        {
+            let expected_vals: Vec<i64> = (0..20).collect();
+            let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
+            verify_decoding(data_buffer, expected_vals)?;
+        }
+        {
+            let expected_vals: Vec<i128> = (0..20).collect();
+            let data_buffer = vec![0xc0, 0x13, 0x00, 0x02];
+            verify_decoding(data_buffer, expected_vals)
+        }
     }
 
     #[test]
     fn orc_cpp_backported_basic_delta1() -> googletest::Result<()> {
         let expected_vals: Vec<i64> = vec![-500, -400, -350, -325, -310];
         let data_buffer = vec![0xce, 0x04, 0xe7, 0x07, 0xc8, 0x01, 0x32, 0x19, 0x0f];
-
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> =
-            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
-        verify_that!(expected_vals, eq(actual))?;
-        Ok(())
+        verify_decoding(data_buffer, expected_vals)
     }
 
     #[test]
     fn orc_cpp_backported_basic_delta2() -> googletest::Result<()> {
         let expected_vals: Vec<i64> = vec![-500, -600, -650, -675, -710];
         let data_buffer = vec![0xce, 0x04, 0xe7, 0x07, 0xc7, 0x01, 0x32, 0x19, 0x23];
-
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> =
-            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
-        verify_that!(expected_vals, eq(actual))?;
-        Ok(())
+        verify_decoding(data_buffer, expected_vals)
     }
 
     #[test]
     fn orc_cpp_backported_basic_delta3() -> googletest::Result<()> {
         let expected_vals: Vec<i64> = vec![500, 400, 350, 325, 310];
         let data_buffer = vec![0xce, 0x04, 0xe8, 0x07, 0xc7, 0x01, 0x32, 0x19, 0x0f];
-
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> =
-            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
-        verify_that!(expected_vals, eq(actual))?;
-        Ok(())
+        verify_decoding(data_buffer, expected_vals)
     }
 
     #[test]
     fn orc_cpp_backported_basic_delta4() -> googletest::Result<()> {
         let expected_vals: Vec<i64> = vec![500, 600, 650, 675, 710];
         let data_buffer = vec![0xce, 0x04, 0xe8, 0x07, 0xc8, 0x01, 0x32, 0x19, 0x23];
-
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> =
-            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
-        verify_that!(expected_vals, eq(actual))?;
-        Ok(())
+        verify_decoding(data_buffer, expected_vals)
     }
 
     #[test]
@@ -579,6 +574,7 @@ mod tests {
         for i in 0..65 {
             expected_vals.push(i - 32);
         }
+
         // Original values: [-32, -31, -30, ..., -1, 0, 1, 2, ..., 32]
         // 2 bytes header: 0xc0, 0x40
         //    2 bits for encoding type(3). 5 bits for bitSize which is 0 for fixed delta.
@@ -586,17 +582,7 @@ mod tests {
         // Base value: -32 which is 65(0x3f) after zigzag
         // Delta base: 1 which is 2(0x02) after zigzag
         let data_buffer = vec![0xc0, 0x40, 0x3f, 0x02];
-
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 1)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 3)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> = decode_rle_data(data_buffer.clone(), expected_vals.len(), 7)?;
-        verify_that!(expected_vals, eq(actual))?;
-        let actual: Vec<i64> =
-            decode_rle_data(data_buffer, expected_vals.len(), expected_vals.len())?;
-        verify_that!(expected_vals, eq(actual))?;
-        Ok(())
+        verify_decoding(data_buffer, expected_vals)
     }
 
     #[test]
@@ -611,5 +597,48 @@ mod tests {
         verify_that!(0x42, eq(actual[4]))?;
         verify_that!(0x42, eq(actual[5]))?;
         Ok(())
+    }
+
+    #[test]
+    fn orc_cpp_backported_short_repeats() -> googletest::Result<()> {
+        signed_short_repeats_test::<1, 2, i8>()?;
+        signed_short_repeats_test::<2, 3, i16>()?;
+        signed_short_repeats_test::<4, 5, i32>()?;
+        signed_short_repeats_test::<8, 10, i64>()?;
+        signed_short_repeats_test::<16, 19, i128>()
+        // signed_short_repeats_test::<1, 2, u8>()
+        // signed_short_repeats_test::<2, 3, u16>()?;
+        // signed_short_repeats_test::<4, 5, u32>()?;
+        // signed_short_repeats_test::<8, 10, u64>()
+        // signed_short_repeats_test::<16, 19, u128>()
+    }
+
+    fn signed_short_repeats_test<
+        const TYPE_SIZE: usize,
+        const MAX_ENCODED_SIZE: usize,
+        IntegerType,
+    >() -> googletest::Result<()>
+    where
+        IntegerType: Integer<TYPE_SIZE, MAX_ENCODED_SIZE> + arrow::datatypes::ArrowNativeType,
+    {
+        let mut expected_vals: Vec<IntegerType> = Vec::with_capacity(70);
+        for i in 0..10 {
+            for _ in 0..7 {
+                expected_vals.push(IntegerType::from_byte(i));
+            }
+        }
+
+        let mut data_buffer = vec![
+            0x04, 0x00, 0x04, 0x02, 0x04, 0x04, 0x04, 0x06, 0x04, 0x08, 0x04, 0x0a, 0x04, 0x0c,
+            0x04, 0x0e, 0x04, 0x10, 0x04, 0x12,
+        ];
+
+        for (i, v) in data_buffer.iter_mut().enumerate() {
+            if !IntegerType::IS_SIGNED && i % 2 == 0 {
+                v = v.fro
+            }
+        }
+
+        verify_decoding(data_buffer, expected_vals)
     }
 }

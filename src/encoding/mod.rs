@@ -590,7 +590,7 @@ pub trait ByteRepr<const N: usize> {
     fn to_le_bytes(&self) -> [u8; N];
     fn truncate_to_u8(&self) -> u8;
     fn from_byte(value: u8) -> Self;
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized;
 }
@@ -612,7 +612,7 @@ impl ByteRepr<1> for i8 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, _: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, _: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -639,7 +639,7 @@ impl ByteRepr<2> for i16 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -655,7 +655,8 @@ impl ByteRepr<2> for i16 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u16::from_be_bytes(val).zigzag_decode())
     }
 }
@@ -677,7 +678,7 @@ impl ByteRepr<4> for i32 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -693,7 +694,8 @@ impl ByteRepr<4> for i32 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u32::from_be_bytes(val).zigzag_decode())
     }
 }
@@ -715,7 +717,7 @@ impl ByteRepr<8> for i64 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -731,7 +733,8 @@ impl ByteRepr<8> for i64 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u64::from_be_bytes(val).zigzag_decode())
     }
 }
@@ -753,7 +756,7 @@ impl ByteRepr<16> for i128 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -769,7 +772,8 @@ impl ByteRepr<16> for i128 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u128::from_be_bytes(val).zigzag_decode())
     }
 }
@@ -791,11 +795,21 @@ impl ByteRepr<1> for u8 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, _: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
         let mut val = [0];
+        if byte_size > val.len() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Integer byte size is {}, but requested size is {}.",
+                    val.len(),
+                    byte_size
+                ),
+            ));
+        }
         input.read_exact(&mut val)?;
         Ok(u8::from_be_bytes(val))
     }
@@ -818,7 +832,7 @@ impl ByteRepr<2> for u16 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -834,7 +848,8 @@ impl ByteRepr<2> for u16 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u16::from_be_bytes(val))
     }
 }
@@ -856,7 +871,7 @@ impl ByteRepr<4> for u32 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -872,7 +887,8 @@ impl ByteRepr<4> for u32 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u32::from_be_bytes(val))
     }
 }
@@ -894,7 +910,7 @@ impl ByteRepr<8> for u64 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -910,7 +926,8 @@ impl ByteRepr<8> for u64 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u64::from_be_bytes(val))
     }
 }
@@ -932,7 +949,7 @@ impl ByteRepr<16> for u128 {
     }
 
     #[inline]
-    fn from_coded_be_bytes(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
+    fn from_coded_big_endian(input: &mut dyn Read, byte_size: usize) -> std::io::Result<Self>
     where
         Self: std::marker::Sized,
     {
@@ -948,7 +965,8 @@ impl ByteRepr<16> for u128 {
             ));
         }
 
-        input.read_exact(&mut val[..byte_size])?;
+        let val_size = val.len();
+        input.read_exact(&mut val[val_size - byte_size..])?;
         Ok(u128::from_be_bytes(val))
     }
 }

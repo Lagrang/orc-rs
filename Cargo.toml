@@ -1,0 +1,28 @@
+[package]
+name = "orc-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1.2.1"
+prost = "0.12.0"
+arrow = "46.0.0"
+snap = "1.1.0"
+zstd = "0.12.1+zstd.1.5.2"
+lz4_flex = { version = "0.11.1", default-features = false, features = [
+    # "checked-decode",
+    "frame",
+] }
+flate2 = "1.0.25"
+thiserror = "1.0.48"
+chrono = "0.4.24"
+chrono-tz = "0.8.2"
+
+[dev-dependencies]
+googletest = "0.10.0"
+similar = "2.2.1"
+colored = "2"
+tempfile = "3.5.0"
+
+[build-dependencies]
+prost-build = { version = "0.12.0" }
